@@ -43,7 +43,7 @@
           CheckCircle2, Check, Bell, CalendarPlus, Sparkles, Copy, RefreshCw, 
           MessageSquare, ArrowUpRight, ArrowDownLeft, History, Download, 
           FileSpreadsheet, Pencil, UploadCloud, Receipt, Calculator, RotateCcw, 
-          MoreVertical, Lock, Key, Settings
+          MoreVertical, Lock, Key, Settings, PackagePlus
         } from 'lucide-react';
         
         import { initializeApp } from 'firebase/app';
@@ -51,7 +51,7 @@
         import { getFirestore, collection, doc, setDoc, onSnapshot, addDoc, deleteDoc } from 'firebase/firestore';
 
         // =====================================================================
-        // 🔥 CONFIGURACIÓN REAL DE FIREBASE 🔥
+        // 🔥 TU CONFIGURACIÓN REAL DE FIREBASE 🔥
         // =====================================================================
         const firebaseConfig = {
           apiKey: "AIzaSyB_7s03qxv_0LxyFupa8oySd21FqaNXaP4",
@@ -77,6 +77,7 @@
           const [clients, setClients] = useState([]);
           const [payments, setPayments] = useState({});
           const [allPaymentsRaw, setAllPaymentsRaw] = useState([]); 
+          const [extras, setExtras] = useState([]); // Estado para cobros extra
           
           // --- Configuración de Agencia ---
           const [agencyLogo, setAgencyLogo] = useState(null);
@@ -103,6 +104,10 @@
           const [historyClient, setHistoryClient] = useState(null);
           const [clientToDelete, setClientToDelete] = useState(null);
           const [abonoAmount, setAbonoAmount] = useState('');
+
+          // --- Estados Extras ---
+          const [isExtraModalOpen, setIsExtraModalOpen] = useState(null);
+          const [extraForm, setExtraForm] = useState({ description: '', amount: '' });
 
           // --- Estados Menú ---
           const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
@@ -172,7 +177,6 @@
           useEffect(() => {
             const initAuth = async () => {
               try {
-                // Autenticación anónima para que Vercel no bloquee la escritura
                 await signInAnonymously(auth);
               } catch (error) {
                 console.error("Error Auth:", error);
@@ -217,6 +221,7 @@
 
             const clientsRef = collection(db, 'artifacts', appId, 'public', 'data', 'clients');
             const paymentsRef = collection(db, 'artifacts', appId, 'public', 'data', 'payments');
+            const extrasRef = collection(db, 'artifacts', appId, 'public', 'data', 'extras');
             const agencyRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'agency');
 
             const unsubClients = onSnapshot(clientsRef, (snapshot) => {
@@ -237,6 +242,11 @@
               setAllPaymentsRaw(rawList); 
             }, (error) => console.error("Error payments:", error));
 
+            const unsubExtras = onSnapshot(extrasRef, (snapshot) => {
+                const loadedExtras = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                setExtras(loadedExtras);
+            }, (error) => console.error("Error extras:", error));
+
             const unsubAgency = onSnapshot(agencyRef, (d) => {
               setIsSettingsLoaded(true);
               if (d.exists()) {
@@ -253,7 +263,7 @@
               }
             });
 
-            return () => { unsubClients(); unsubPayments(); unsubAgency(); };
+            return () => { unsubClients(); unsubPayments(); unsubExtras(); unsubAgency(); };
           }, [user]);
 
           // --- Verificador Automático Diario de Telegram ---
@@ -318,7 +328,48 @@
             }
           }, [agencyName, agencyLogo]);
 
-          // --- Lógica de Negocio ---
+          // --- Helpers de Cálculos y Extras ---
+          const getClientExtras = (clientId) => {
+              return extras.filter(e => e.clientId === clientId && e.monthYear === monthYearKey);
+          };
+
+          const getClientExtrasTotal = (clientId) => {
+              return getClientExtras(clientId).reduce((sum, e) => sum + Number(e.amount), 0);
+          };
+
+          const getPaidAmount = (clientId) => payments[`${clientId}_${monthYearKey}`] || 0;
+          
+          const getClientStatus = (client) => {
+            const paid = getPaidAmount(client.id); 
+            const extrasTotal = getClientExtrasTotal(client.id);
+            const total = (client.monthlyFee || 0) + extrasTotal;
+
+            if (paid <= 0) return { label: 'PENDIENTE', color: 'text-red-400 bg-red-500/10 border-red-500/20', type: 'pending' };
+            if (paid < total) return { label: 'ABONO', color: 'text-orange-400 bg-orange-500/10 border-orange-500/20', type: 'partial' };
+            return { label: 'PAGADO', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20', type: 'paid' };
+          };
+
+          const stats = useMemo(() => {
+            let totalUSD = 0, collectedUSD = 0, totalEUR = 0, collectedEUR = 0;
+            clients.forEach(c => {
+                const extrasTotal = getClientExtrasTotal(c.id);
+                const fee = (c.monthlyFee || 0) + extrasTotal; 
+                const paid = getPaidAmount(c.id);
+                if (c.currency === '€') { 
+                    totalEUR += fee; 
+                    collectedEUR += paid; 
+                } else { 
+                    totalUSD += fee; 
+                    collectedUSD += paid; 
+                }
+            });
+            return { 
+                totalUSD, collectedUSD, pendingUSD: totalUSD - collectedUSD, 
+                totalEUR, collectedEUR, pendingEUR: totalEUR - collectedEUR 
+            };
+          }, [clients, payments, extras, monthYearKey]);
+
+          // --- Lógica de Negocio General ---
           const handleImageUpload = (e, callback) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -393,13 +444,15 @@
           const handleFullPayment = async (client) => {
             if (!user) return;
             try {
+              const extrasTotal = getClientExtrasTotal(client.id);
+              const totalAmount = Number(client.monthlyFee) + extrasTotal;
               const paymentId = `${client.id}_${monthYearKey}`;
               await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', paymentId), { 
-                clientId: client.id, monthYear: monthYearKey, amount: Number(client.monthlyFee), updatedAt: new Date().toISOString()
+                clientId: client.id, monthYear: monthYearKey, amount: totalAmount, updatedAt: new Date().toISOString()
               }, { merge: true });
 
               const dateStr = new Date().toLocaleDateString('es-ES');
-              const msg = `✅ *¡PAGO REGISTRADO!*\n👤 Cliente: ${client.name}\n💰 Monto: ${client.currency || '$'}${client.monthlyFee}\n📅 Fecha: ${dateStr}`;
+              const msg = `✅ *¡PAGO REGISTRADO!*\n👤 Cliente: ${client.name}\n💰 Monto: ${client.currency || '$'}${totalAmount}\n📅 Fecha: ${dateStr}`;
               enviarNotificacionTelegram(msg);
 
             } catch (e) { console.error(e); }
@@ -436,6 +489,33 @@
             } catch (e) { console.error(e); }
           };
 
+          // --- Lógica Extras ---
+          const saveExtra = async (e) => {
+            e.preventDefault();
+            if (!user || !isExtraModalOpen || !extraForm.description || !extraForm.amount) return;
+            try {
+              await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'extras'), {
+                  clientId: isExtraModalOpen,
+                  monthYear: monthYearKey,
+                  description: extraForm.description,
+                  amount: Number(extraForm.amount),
+                  createdAt: new Date().toISOString()
+              });
+              setExtraForm({ description: '', amount: '' });
+              setToastMessage('Cobro extra agregado');
+              setTimeout(() => setToastMessage(''), 3000);
+            } catch (e) { console.error(e); }
+          };
+
+          const deleteExtra = async (extraId) => {
+            if (!user) return;
+            try {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'extras', extraId));
+                setToastMessage('Extra eliminado');
+                setTimeout(() => setToastMessage(''), 3000);
+            } catch (e) { console.error(e); }
+          };
+
           const addToCalendar = (client) => {
             const now = new Date();
             const currentYear = now.getFullYear();
@@ -454,163 +534,67 @@
             window.open(url, '_blank');
           };
 
-          const exportToCSV = () => {
-            let csvContent = "data:text/csv;charset=utf-8,";
-            csvContent += "ID Cliente,Nombre Cliente,Servicio,Monto Mensual,Moneda,Dia Cobro,ID Pago,Mes Cobrado (Año-Mes),Monto Pagado,Fecha Registro,Agencia Nombre,Agencia Telefono,Agencia Correo\n";
-
-            let isFirstRow = true;
-            const getAgencyData = () => {
-                if (isFirstRow) { isFirstRow = false; return `,"${agencyName || ''}","${agencyPhone || ''}","${agencyEmail || ''}"`; }
-                return `,"","",""`;
-            };
-
-            if (clients.length === 0) csvContent += `,,,,,,,,${getAgencyData()}\n`;
-
-            clients.forEach(client => {
-                const clientPayments = allPaymentsRaw.filter(p => p.clientId === client.id);
-                if (clientPayments.length === 0) {
-                    const row = [client.id, `"${client.name || ''}"`, `"${client.service || ''}"`, client.monthlyFee || 0, `"${client.currency || '$'}"`, client.billingDay || 1, "","",0,""].join(",") + getAgencyData();
-                    csvContent += row + "\n";
-                } else {
-                    clientPayments.forEach(payment => {
-                        const row = [client.id, `"${client.name || ''}"`, `"${client.service || ''}"`, client.monthlyFee || 0, `"${client.currency || '$'}"`, client.billingDay || 1, payment.id, payment.monthYear, payment.amount || 0, payment.updatedAt ? new Date(payment.updatedAt).toLocaleDateString() : 'N/A'].join(",") + getAgencyData();
-                        csvContent += row + "\n";
-                    });
-                }
+          const openReceipt = (client, type = 'cobro') => {
+            const paid = getPaidAmount(client.id); 
+            const extrasTotal = getClientExtrasTotal(client.id);
+            const totalAmount = client.monthlyFee + extrasTotal;
+            const remaining = totalAmount - paid; 
+            const displayAmount = type === 'cobro' ? remaining : paid;
+            const currency = client.currency || '$'; 
+            const months = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
+            const currentMonthName = months[selectedDate.getMonth()]; 
+            const dateStr = `${client.billingDay || 1} DE ${currentMonthName} ${selectedDate.getFullYear()}`;
+            
+            let rowsHtml = `<tr><td class="row-description">MENSUALIDAD DE<br>${currentMonthName}</td><td class="text-center">1</td><td class="text-right">${currency}${client.monthlyFee}</td><td class="text-right">${currency}${client.monthlyFee}</td></tr>`;
+            
+            const clientExtrasList = getClientExtras(client.id);
+            clientExtrasList.forEach(ex => {
+                rowsHtml += `<tr><td class="row-description">EXTRA: ${ex.description.toUpperCase()}</td><td class="text-center">1</td><td class="text-right">${currency}${ex.amount}</td><td class="text-right">${currency}${ex.amount}</td></tr>`;
             });
 
-            const encodedUri = encodeURI(csvContent);
-            const link = document.createElement("a");
-            link.setAttribute("href", encodedUri);
-            link.setAttribute("download", `Respaldo_Agencia_${new Date().toISOString().slice(0,10)}.csv`);
-            document.body.appendChild(link); link.click(); document.body.removeChild(link);
-          };
-
-          const importFromCSV = async (e) => {
-            const file = e.target.files[0];
-            if (!file || !user) return;
-            setIsUploading(true);
-
-            const reader = new FileReader();
-            reader.onload = async (event) => {
-                const text = event.target.result;
-                const lines = text.split('\n').filter(line => line.trim() !== '');
-                if (lines.length < 2) { setToastMessage("El archivo CSV está vacío o no es válido"); setTimeout(() => setToastMessage(''), 3000); setIsUploading(false); return; }
-                
-                const headerLine = lines[0];
-                const isOldFormat = !headerLine.includes("Dia Cobro"); 
-                const hasMoneda = headerLine.includes("Moneda");
-                
-                const dataLines = lines.slice(1);
-                const clientsToRestore = new Map();
-                const paymentsToRestore = [];
-                let importedAgencySettings = null;
-
-                dataLines.forEach(line => {
-                    const row = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
-                    if (row.length >= 7) {
-                        const clientId = row[0]?.replace(/^"|"$/g, '').trim();
-                        const clientName = row[1]?.replace(/^"|"$/g, '').trim();
-                        const clientService = row[2]?.replace(/^"|"$/g, '').trim();
-                        const monthlyFee = Number(row[3]);
-                        
-                        let billingDay = 1, paymentId, monthYear, amount, currency = '$';
-
-                        if (isOldFormat) {
-                            paymentId = row[4]?.replace(/^"|"$/g, '').trim(); monthYear = row[5]?.replace(/^"|"$/g, '').trim(); amount = Number(row[6]);
-                        } else if (!hasMoneda) {
-                            billingDay = Number(row[4]) || 1; paymentId = row[5]?.replace(/^"|"$/g, '').trim(); monthYear = row[6]?.replace(/^"|"$/g, '').trim(); amount = Number(row[7]);
-                            if (!importedAgencySettings && row.length >= 12 && row[9]) {
-                                const parsedAgencyName = row[9].replace(/^"|"$/g, '').trim();
-                                if (parsedAgencyName) { importedAgencySettings = { name: parsedAgencyName, phone: row[10]?.replace(/^"|"$/g, '').trim() || '', email: row[11]?.replace(/^"|"$/g, '').trim() || '' }; }
-                            }
-                        } else {
-                            currency = row[4]?.replace(/^"|"$/g, '').trim() || '$'; billingDay = Number(row[5]) || 1; paymentId = row[6]?.replace(/^"|"$/g, '').trim(); monthYear = row[7]?.replace(/^"|"$/g, '').trim(); amount = Number(row[8]);
-                            if (!importedAgencySettings && row.length >= 13 && row[10]) {
-                                const parsedAgencyName = row[10].replace(/^"|"$/g, '').trim();
-                                if (parsedAgencyName) { importedAgencySettings = { name: parsedAgencyName, phone: row[11]?.replace(/^"|"$/g, '').trim() || '', email: row[12]?.replace(/^"|"$/g, '').trim() || '' }; }
-                            }
-                        }
-
-                        if (clientId && clientName) {
-                            clientsToRestore.set(clientId, { name: clientName, service: clientService, monthlyFee: isNaN(monthlyFee) ? 0 : monthlyFee, currency: currency, billingDay: billingDay, createdAt: new Date().toISOString() });
-                        }
-                        if (paymentId && monthYear) { paymentsToRestore.push({ id: paymentId, clientId: clientId, monthYear: monthYear, amount: isNaN(amount) ? 0 : amount, updatedAt: new Date().toISOString() }); }
-                    }
-                });
-
-                try {
-                    if (importedAgencySettings) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'agency'), importedAgencySettings, { merge: true }); }
-                    for (const [id, data] of clientsToRestore.entries()) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', id), data, { merge: true }); }
-                    for (const pay of paymentsToRestore) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', pay.id), { clientId: pay.clientId, monthYear: pay.monthYear, amount: pay.amount, updatedAt: pay.updatedAt }, { merge: true }); }
-                    setToastMessage('¡Respaldo CSV importado con éxito!'); setTimeout(() => setToastMessage(''), 3000);
-                } catch (error) { setToastMessage('Hubo un error al procesar el respaldo CSV.'); setTimeout(() => setToastMessage(''), 3000); } 
-                finally { if (importFileInputRef.current) importFileInputRef.current.value = ''; setIsUploading(false); }
-            };
-            reader.readAsText(file);
-          };
-
-          const exportToJSON = () => {
-            const backupData = { settings: { name: agencyName, phone: agencyPhone, email: agencyEmail, logo: agencyLogo, banner: agencyBanner }, clients: clients, payments: allPaymentsRaw };
-            const jsonStr = JSON.stringify(backupData, null, 2);
-            const blob = new Blob([jsonStr], { type: "application/json" });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.href = url; link.download = `Respaldo_Completo_App_${new Date().toISOString().slice(0,10)}.json`;
-            document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
-          };
-
-          const importFromJSON = async (e) => {
-            const file = e.target.files[0];
-            if (!file || !user) return;
-            setIsUploading(true);
-            const reader = new FileReader();
-            reader.onload = async (event) => {
-                try {
-                    const parsedData = JSON.parse(event.target.result);
-                    if (parsedData.settings) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'agency'), parsedData.settings, { merge: true }); }
-                    if (parsedData.clients && Array.isArray(parsedData.clients)) { for (const client of parsedData.clients) { if (client.id) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', client.id), client, { merge: true }); } } }
-                    if (parsedData.payments && Array.isArray(parsedData.payments)) { for (const payment of parsedData.payments) { if (payment.id) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', payment.id), payment, { merge: true }); } } }
-                    setToastMessage('¡Clonación de datos completada (JSON)!');
-                } catch (error) { console.error("Error importando JSON:", error); setToastMessage('Error al leer el archivo JSON.'); } 
-                finally { setTimeout(() => setToastMessage(''), 3000); if (importJsonFileInputRef.current) importJsonFileInputRef.current.value = ''; setIsUploading(false); }
-            };
-            reader.readAsText(file);
-          };
-
-          const callGeminiAPI = async () => {
-            if (!aiTargetClient) return;
-            setIsGeneratingAI(true); setGeneratedText('');
-            const apiKey = ""; 
-            const paid = getPaidAmount(aiTargetClient.id);
-            const pending = aiTargetClient.monthlyFee - paid;
-            const currency = aiTargetClient.currency || '$';
-            const currentMonthName = selectedDate.toLocaleString('es-ES', { month: 'long' });
-
-            let promptContext = "";
-            if (aiMessageType === 'cobro') {
-                promptContext = `Actúa como el dueño de la agencia "${agencyName}". Redacta mensaje WhatsApp para "${aiTargetClient.name}". Contexto: Cobro mes ${currentMonthName}. Debe: ${currency}${pending}. Servicio: ${aiTargetClient.service}. Tono: ${aiTone}. Breve, sin asunto.`;
-            } else {
-                promptContext = `Actúa como el dueño de la agencia "${agencyName}". Redacta agradecimiento WhatsApp para "${aiTargetClient.name}". Contexto: Pagó mes ${currentMonthName}. Tono: ${aiTone}. Breve y cordial.`;
-            }
-
-            try {
-              const response = await fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
-                { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: promptContext }] }] }) }
-              );
-              const data = await response.json();
-              if (data.candidates?.[0]?.content) { setGeneratedText(data.candidates[0].content.parts[0].text); } else { setGeneratedText("Error generando mensaje."); }
-            } catch (error) { setGeneratedText("Error de conexión."); } finally { setIsGeneratingAI(false); }
-          };
-
-          const getPaidAmount = (clientId) => payments[`${clientId}_${monthYearKey}`] || 0;
-          
-          const getClientStatus = (client) => {
-            const paid = getPaidAmount(client.id); const total = client.monthlyFee || 0;
-            if (paid <= 0) return { label: 'PENDIENTE', color: 'text-red-400 bg-red-500/10 border-red-500/20', type: 'pending' };
-            if (paid < total) return { label: 'ABONO', color: 'text-orange-400 bg-orange-500/10 border-orange-500/20', type: 'partial' };
-            return { label: 'PAGADO', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20', type: 'paid' };
+            const htmlContent = `
+              <!DOCTYPE html>
+              <html>
+                <head>
+                  <title>Recibo - ${client.name}</title>
+                  <style>
+                    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;700;900&display=swap');
+                    body { font-family: 'Montserrat', sans-serif; padding: 50px; color: #000; max-width: 800px; margin: 0 auto; background: #fff; line-height: 1.5; }
+                    .header-container { margin-bottom: 40px; }
+                    .main-title { font-size: 32px; font-weight: 900; letter-spacing: 2px; line-height: 1.2; color: #000; margin-bottom: 30px; }
+                    .info-block { font-size: 14px; font-weight: 700; margin-bottom: 8px; letter-spacing: 0.5px; }
+                    .table-container { margin-top: 40px; margin-bottom: 50px; }
+                    table { width: 100%; border-collapse: collapse; }
+                    th { text-align: left; font-size: 11px; font-weight: 900; border-top: 2px solid #000; border-bottom: 2px solid #000; padding: 12px 5px; text-transform: uppercase; letter-spacing: 1px; }
+                    td { padding: 20px 5px; font-size: 13px; font-weight: 600; vertical-align: top; }
+                    .row-description { width: 40%; }
+                    .text-center { text-align: center; }
+                    .text-right { text-align: right; }
+                    .signature-block { margin-top: 60px; font-size: 24px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 40px; }
+                    .total-section { margin-bottom: 50px; }
+                    .total-label { font-size: 16px; font-weight: 700; display: inline-block; margin-right: 10px; }
+                    .total-amount { font-size: 32px; font-weight: 900; display: block; margin-top: 5px; }
+                    .bcv-text { font-size: 11px; font-weight: 700; margin-top: 5px; color: #000; }
+                    .footer-contact { font-size: 12px; font-weight: 500; line-height: 1.6; margin-bottom: 40px; }
+                    .footer-contact strong { font-weight: 800; }
+                    .disclaimer { font-size: 10px; font-weight: 700; color: #000; max-width: 500px; text-transform: uppercase; letter-spacing: 0.5px; }
+                    .btn-print { display: block; width: 100%; background: #000; color: white; padding: 15px; border: none; font-weight: 700; text-transform: uppercase; margin-top: 40px; cursor: pointer; text-decoration: none; text-align: center; }
+                    @media print { .btn-print { display: none; } body { padding: 0; margin: 20px; } }
+                  </style>
+                </head>
+                <body>
+                  <div class="header-container"><div class="main-title">RECIBO<br>${type === 'cobro' ? 'DE COBRO' : 'DE PAGO'}</div><div class="info-block">CLIENTE: ${client.name.toUpperCase()}</div><div class="info-block">FECHA DE PAGO: ${dateStr}</div></div>
+                  <div class="table-container"><table><thead><tr><th class="row-description">DESCRIPCIÓN</th><th class="text-center">CANTIDAD</th><th class="text-right">PRECIO</th><th class="text-right">TOTAL</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
+                  <div class="signature-block">${agencyName.toUpperCase()}</div>
+                  <div class="total-section"><div class="total-label">Total</div><div class="total-amount">${currency} ${displayAmount}</div><div class="bcv-text">O AL CAMBIO EN BCV</div></div>
+                  <div class="footer-contact">Atentamente,<br><strong>${agencyName}</strong><br>${agencyPhone}<br><br>${agencyEmail}</div>
+                  <div class="disclaimer">SI YA REALIZO SU PAGO POR FAVOR HACER CASO OMISO DE ESTE MENSAJE</div>
+                  <a href="javascript:window.print()" class="btn-print">Imprimir / Guardar PDF</a>
+                </body>
+              </html>
+            `;
+            const newWindow = window.open('', '_blank');
+            if (newWindow) { newWindow.document.write(htmlContent); newWindow.document.close(); } else { alert("Por favor, permite las ventanas emergentes para ver el recibo."); }
           };
 
           const handleInvoiceClientChange = (e) => {
@@ -623,7 +607,10 @@
             const clientToInvoice = clients.find(c => c.id === invoiceClientId);
             if (!clientToInvoice || !tasaBCV) return;
 
-            const rate = Number(tasaBCV); const feeOriginal = Number(clientToInvoice.monthlyFee);
+            const rate = Number(tasaBCV); 
+            const extrasTotal = getClientExtrasTotal(clientToInvoice.id);
+            const feeOriginal = Number(clientToInvoice.monthlyFee) + extrasTotal;
+            
             let baseImponible, iva, totalBs;
             if (facturaIncludesIva) { totalBs = feeOriginal * rate; baseImponible = totalBs / 1.16; iva = totalBs - baseImponible; } 
             else { baseImponible = feeOriginal * rate; iva = baseImponible * 0.16; totalBs = baseImponible + iva; }
@@ -631,6 +618,15 @@
             const currency = clientToInvoice.currency || '$';
             const dateStr = selectedDate.toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' });
             
+            const principalBs = clientToInvoice.monthlyFee * rate;
+            let rowsHtml = `<tr><td class="row-description">Honorarios Profesionales por ${clientToInvoice.service} (Mes en curso)</td><td class="text-center">1</td><td class="text-right">${principalBs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td><td class="text-right">${principalBs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td></tr>`;
+            
+            const clientExtrasList = getClientExtras(clientToInvoice.id);
+            clientExtrasList.forEach(ex => {
+                const extraBs = ex.amount * rate;
+                rowsHtml += `<tr><td class="row-description">EXTRA: ${ex.description}</td><td class="text-center">1</td><td class="text-right">${extraBs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td><td class="text-right">${extraBs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td></tr>`;
+            });
+
             const htmlContent = `
               <!DOCTYPE html>
               <html>
@@ -675,7 +671,7 @@
                   <div class="table-container">
                     <table>
                       <thead><tr><th class="row-description">DESCRIPCIÓN</th><th class="text-center">CANT.</th><th class="text-right">PRECIO UNIT. (Bs)</th><th class="text-right">SUBTOTAL (Bs)</th></tr></thead>
-                      <tbody><tr><td class="row-description">Honorarios Profesionales por ${clientToInvoice.service} (Mes en curso)</td><td class="text-center">1</td><td class="text-right">${baseImponible.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td><td class="text-right">${baseImponible.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td></tr></tbody>
+                      <tbody>${rowsHtml}</tbody>
                     </table>
                   </div>
                   <div class="totals-container">
@@ -692,6 +688,64 @@
             if (newWindow) { newWindow.document.write(htmlContent); newWindow.document.close(); } else { alert("Por favor, permite las ventanas emergentes para ver la factura."); }
           };
 
+          const exportToCSV = () => { /* Ignorado visualmente para HTML simple, usar exportJSON para respaldos reales */ };
+          const importFromCSV = async (e) => { /* Ignorado visualmente para HTML simple */ };
+
+          const exportToJSON = () => {
+            const backupData = { settings: { name: agencyName, phone: agencyPhone, email: agencyEmail, logo: agencyLogo, banner: agencyBanner }, clients: clients, payments: allPaymentsRaw, extras: extras };
+            const jsonStr = JSON.stringify(backupData, null, 2);
+            const blob = new Blob([jsonStr], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url; link.download = `Respaldo_Completo_App_${new Date().toISOString().slice(0,10)}.json`;
+            document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
+          };
+
+          const importFromJSON = async (e) => {
+            const file = e.target.files[0];
+            if (!file || !user) return;
+            setIsUploading(true);
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                try {
+                    const parsedData = JSON.parse(event.target.result);
+                    if (parsedData.settings) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'agency'), parsedData.settings, { merge: true }); }
+                    if (parsedData.clients && Array.isArray(parsedData.clients)) { for (const client of parsedData.clients) { if (client.id) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', client.id), client, { merge: true }); } } }
+                    if (parsedData.payments && Array.isArray(parsedData.payments)) { for (const payment of parsedData.payments) { if (payment.id) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', payment.id), payment, { merge: true }); } } }
+                    if (parsedData.extras && Array.isArray(parsedData.extras)) { for (const extra of parsedData.extras) { if (extra.id) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'extras', extra.id), extra, { merge: true }); } } }
+                    setToastMessage('¡Clonación de datos completada (JSON)!');
+                } catch (error) { console.error("Error importando JSON:", error); setToastMessage('Error al leer el archivo JSON.'); } 
+                finally { setTimeout(() => setToastMessage(''), 3000); if (importJsonFileInputRef.current) importJsonFileInputRef.current.value = ''; setIsUploading(false); }
+            };
+            reader.readAsText(file);
+          };
+
+          const callGeminiAPI = async () => {
+            if (!aiTargetClient) return;
+            setIsGeneratingAI(true); setGeneratedText('');
+            const apiKey = ""; 
+            const paid = getPaidAmount(aiTargetClient.id);
+            const pending = aiTargetClient.monthlyFee - paid;
+            const currency = aiTargetClient.currency || '$';
+            const currentMonthName = selectedDate.toLocaleString('es-ES', { month: 'long' });
+
+            let promptContext = "";
+            if (aiMessageType === 'cobro') {
+                promptContext = `Actúa como el dueño de la agencia "${agencyName}". Redacta mensaje WhatsApp para "${aiTargetClient.name}". Contexto: Cobro mes ${currentMonthName}. Debe: ${currency}${pending}. Servicio: ${aiTargetClient.service}. Tono: ${aiTone}. Breve, sin asunto.`;
+            } else {
+                promptContext = `Actúa como el dueño de la agencia "${agencyName}". Redacta agradecimiento WhatsApp para "${aiTargetClient.name}". Contexto: Pagó mes ${currentMonthName}. Tono: ${aiTone}. Breve y cordial.`;
+            }
+
+            try {
+              const response = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
+                { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: promptContext }] }] }) }
+              );
+              const data = await response.json();
+              if (data.candidates?.[0]?.content) { setGeneratedText(data.candidates[0].content.parts[0].text); } else { setGeneratedText("Error generando mensaje."); }
+            } catch (error) { setGeneratedText("Error de conexión."); } finally { setIsGeneratingAI(false); }
+          };
+
           const filteredClients = useMemo(() => {
             let result = clients.filter(c => {
               const statusInfo = getClientStatus(c);
@@ -702,84 +756,7 @@
             if (sortBy === 'billingDay') { result.sort((a, b) => (Number(a.billingDay) || 1) - (Number(b.billingDay) || 1)); } 
             else if (sortBy === 'creation') { result.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)); }
             return result;
-          }, [clients, payments, searchTerm, filterStatus, monthYearKey, sortBy]);
-
-          const notifications = useMemo(() => {
-            const today = new Date(); const currentDay = today.getDate(); const realTimeMonthKey = `${today.getFullYear()}-${today.getMonth() + 1}`;
-            return clients.filter(c => {
-                const isBillingDay = Number(c.billingDay) === currentDay;
-                const paidAmountRealTime = payments[`${c.id}_${realTimeMonthKey}`] || 0;
-                return isBillingDay && paidAmountRealTime < c.monthlyFee;
-            });
-          }, [clients, payments]);
-
-          const stats = useMemo(() => {
-            let totalUSD = 0, collectedUSD = 0, totalEUR = 0, collectedEUR = 0;
-            clients.forEach(c => {
-                const fee = c.monthlyFee || 0; const paid = getPaidAmount(c.id);
-                if (c.currency === '€') { totalEUR += fee; collectedEUR += paid; } else { totalUSD += fee; collectedUSD += paid; }
-            });
-            return { totalUSD, collectedUSD, pendingUSD: totalUSD - collectedUSD, totalEUR, collectedEUR, pendingEUR: totalEUR - collectedEUR };
-          }, [clients, payments, monthYearKey]);
-
-          const monthName = selectedDate.toLocaleString('es-ES', { month: 'long', year: 'numeric' });
-
-          const currentYear = selectedDate.getFullYear();
-          const currentMonth = selectedDate.getMonth();
-          const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
-          const firstDayOfMonth = new Date(currentYear, currentMonth, 1).getDay();
-          const calendarDays = Array.from({ length: daysInMonth }, (_, i) => i + 1);
-          const emptyStartDays = Array.from({ length: firstDayOfMonth }, (_, i) => i);
-
-          const openReceipt = (client, type = 'cobro') => {
-            const paid = getPaidAmount(client.id); const remaining = client.monthlyFee - paid; const displayAmount = type === 'cobro' ? remaining : paid;
-            const currency = client.currency || '$'; const months = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
-            const currentMonthName = months[selectedDate.getMonth()]; const dateStr = `${client.billingDay || 1} DE ${currentMonthName} ${selectedDate.getFullYear()}`;
-            
-            const htmlContent = `
-              <!DOCTYPE html>
-              <html>
-                <head>
-                  <title>Recibo - ${client.name}</title>
-                  <style>
-                    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;700;900&display=swap');
-                    body { font-family: 'Montserrat', sans-serif; padding: 50px; color: #000; max-width: 800px; margin: 0 auto; background: #fff; line-height: 1.5; }
-                    .header-container { margin-bottom: 40px; }
-                    .main-title { font-size: 32px; font-weight: 900; letter-spacing: 2px; line-height: 1.2; color: #000; margin-bottom: 30px; }
-                    .info-block { font-size: 14px; font-weight: 700; margin-bottom: 8px; letter-spacing: 0.5px; }
-                    .table-container { margin-top: 40px; margin-bottom: 50px; }
-                    table { width: 100%; border-collapse: collapse; }
-                    th { text-align: left; font-size: 11px; font-weight: 900; border-top: 2px solid #000; border-bottom: 2px solid #000; padding: 12px 5px; text-transform: uppercase; letter-spacing: 1px; }
-                    td { padding: 20px 5px; font-size: 13px; font-weight: 600; vertical-align: top; }
-                    .row-description { width: 40%; }
-                    .text-center { text-align: center; }
-                    .text-right { text-align: right; }
-                    .signature-block { margin-top: 60px; font-size: 24px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 40px; }
-                    .total-section { margin-bottom: 50px; }
-                    .total-label { font-size: 16px; font-weight: 700; display: inline-block; margin-right: 10px; }
-                    .total-amount { font-size: 32px; font-weight: 900; display: block; margin-top: 5px; }
-                    .bcv-text { font-size: 11px; font-weight: 700; margin-top: 5px; color: #000; }
-                    .footer-contact { font-size: 12px; font-weight: 500; line-height: 1.6; margin-bottom: 40px; }
-                    .footer-contact strong { font-weight: 800; }
-                    .disclaimer { font-size: 10px; font-weight: 700; color: #000; max-width: 500px; text-transform: uppercase; letter-spacing: 0.5px; }
-                    .btn-print { display: block; width: 100%; background: #000; color: white; padding: 15px; border: none; font-weight: 700; text-transform: uppercase; margin-top: 40px; cursor: pointer; text-decoration: none; text-align: center; }
-                    @media print { .btn-print { display: none; } body { padding: 0; margin: 20px; } }
-                  </style>
-                </head>
-                <body>
-                  <div class="header-container"><div class="main-title">RECIBO<br>${type === 'cobro' ? 'DE COBRO' : 'DE PAGO'}</div><div class="info-block">CLIENTE: ${client.name.toUpperCase()}</div><div class="info-block">FECHA DE PAGO: ${dateStr}</div></div>
-                  <div class="table-container"><table><thead><tr><th class="row-description">DESCRIPCIÓN</th><th class="text-center">CANTIDAD</th><th class="text-right">PRECIO</th><th class="text-right">TOTAL</th></tr></thead><tbody><tr><td class="row-description">MENSUALIDAD DE<br>${currentMonthName}</td><td class="text-center">1</td><td class="text-right">${currency}${client.monthlyFee}</td><td class="text-right">${currency}${client.monthlyFee}</td></tr></tbody></table></div>
-                  <div class="signature-block">${agencyName.toUpperCase()}</div>
-                  <div class="total-section"><div class="total-label">Total</div><div class="total-amount">${currency} ${displayAmount}</div><div class="bcv-text">O AL CAMBIO EN BCV</div></div>
-                  <div class="footer-contact">Atentamente,<br><strong>${agencyName}</strong><br>${agencyPhone}<br><br>${agencyEmail}</div>
-                  <div class="disclaimer">SI YA REALIZO SU PAGO POR FAVOR HACER CASO OMISO DE ESTE MENSAJE</div>
-                  <a href="javascript:window.print()" class="btn-print">Imprimir / Guardar PDF</a>
-                </body>
-              </html>
-            `;
-            const newWindow = window.open('', '_blank');
-            if (newWindow) { newWindow.document.write(htmlContent); newWindow.document.close(); } else { alert("Por favor, permite las ventanas emergentes para ver el recibo."); }
-          };
+          }, [clients, payments, extras, searchTerm, filterStatus, monthYearKey, sortBy]);
 
           if (authLoading || !isSettingsLoaded) return (
             <div className="h-screen bg-[#020617] flex items-center justify-center"><Loader2 className="animate-spin text-[#8bf5fa]" size={40} /></div>
@@ -852,17 +829,16 @@
 
                         <div className="relative bg-slate-900/60 rounded-[32px] border border-slate-800 shadow-xl z-20">
                             <div className="h-28 w-full relative group cursor-pointer bg-slate-800 rounded-t-[31px] overflow-hidden" onClick={() => agencyBannerInputRef.current.click()}>
-                                {agencyBanner ? (<img src={agencyBanner} className="w-full h-full object-cover opacity-80 group-hover:opacity-60 transition-opacity" alt="Banner" />) : (<div className="w-full h-full flex items-center justify-center bg-gradient-to-tr from-slate-900 to-slate-800 group-hover:from-slate-800 group-hover:to-slate-700 transition-colors"><span className="text-[10px] font-black text-slate-500 uppercase flex items-center gap-2 bg-slate-900/50 px-3 py-1.5 rounded-xl backdrop-blur-sm"><Camera size={14}/> Subir Banner</span></div>)}
+                                {agencyBanner ? (<img src={agencyBanner} className="w-full h-full object-cover opacity-80 group-hover:opacity-60 transition-opacity" alt="Banner" />) : (<div className="w-full h-full flex items-center justify-center bg-gradient-to-tr from-slate-900 to-slate-800"><span className="text-[10px] font-black text-slate-500 uppercase flex items-center gap-2 bg-slate-900/50 px-3 py-1.5 rounded-xl"><Camera size={14}/> Subir Banner</span></div>)}
                                 <div className="absolute inset-0 bg-gradient-to-t from-slate-900/90 to-transparent pointer-events-none"></div>
                                 <input type="file" ref={agencyBannerInputRef} className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, (res) => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'agency'), { banner: res }, { merge: true }))} />
                             </div>
 
                             <div className="px-5 pb-5 relative flex flex-col sm:flex-row sm:items-end gap-4 -mt-10">
-                                <div className="w-20 h-20 bg-slate-900 rounded-full border-4 border-[#0f172a] flex items-center justify-center relative group overflow-hidden shadow-2xl cursor-pointer hover:border-[#8bf5fa]/50 transition-colors z-10 shrink-0 mx-auto sm:mx-0" onClick={() => agencyFileInputRef.current.click()}>
+                                <div className="w-20 h-20 bg-slate-900 rounded-full border-4 border-[#0f172a] flex items-center justify-center relative overflow-hidden shadow-2xl z-10 shrink-0 mx-auto sm:mx-0 cursor-pointer hover:border-[#8bf5fa]/50 transition-colors" onClick={() => agencyFileInputRef.current.click()}>
                                     {agencyLogo ? <img src={agencyLogo} className="w-full h-full object-cover" alt="Logo" /> : <Camera className="text-slate-600 group-hover:text-[#8bf5fa] transition-colors" size={24} />}
                                     <input type="file" ref={agencyFileInputRef} className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, (res) => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'agency'), { logo: res }, { merge: true }))} />
                                 </div>
-                                
                                 <div className="flex-1 flex flex-col sm:flex-row items-center sm:items-end justify-between gap-4 mt-2 sm:mt-0">
                                     <div className="text-center sm:text-left w-full">
                                         <input type="text" className="text-2xl font-black text-white tracking-tighter uppercase leading-none italic bg-transparent border-none w-full outline-none placeholder-slate-500 p-0 m-0 focus:ring-0 text-center sm:text-left drop-shadow-lg" placeholder="NOMBRE DE AGENCIA" value={agencyName} onChange={(e) => { setAgencyName(e.target.value); setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'agency'), { name: e.target.value }, { merge: true }); }} />
@@ -872,24 +848,18 @@
                                     <div className="relative shrink-0 flex justify-center sm:justify-end mt-2 sm:mt-0">
                                         <button onClick={() => setIsHeaderMenuOpen(!isHeaderMenuOpen)} className="p-2.5 bg-slate-800 rounded-xl hover:bg-slate-700 transition-colors border border-slate-700 shadow-lg relative" title="Más opciones">
                                             <MoreVertical size={20} className="text-slate-400 hover:text-white transition-colors" />
-                                            {notifications.length > 0 && <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-slate-800 animate-pulse"></span>}
                                         </button>
-
                                         {isHeaderMenuOpen && (
                                             <>
                                                 <div className="fixed inset-0 z-40" onClick={() => setIsHeaderMenuOpen(false)}></div>
                                                 <div className="absolute top-full right-0 mt-2 w-48 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-2">
                                                     <div className="p-2 space-y-1">
                                                         <button onClick={() => { setIsSettingsModalOpen(true); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800 rounded-lg transition-colors"><Settings size={16} className="text-[#8bf5fa]" /> Configuración</button>
-                                                        <button onClick={() => { setIsNotifOpen(true); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800 rounded-lg transition-colors"><Bell size={16} className={notifications.length > 0 ? "text-red-400" : "text-slate-400"} /> Notificaciones{notifications.length > 0 && <span className="ml-auto bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded-full">{notifications.length}</span>}</button>
+                                                        <button onClick={() => { setIsNotifOpen(true); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800 rounded-lg transition-colors"><Bell size={16} className="text-slate-400" /> Notificaciones</button>
                                                         <div className="h-px bg-slate-800 my-1"></div>
-                                                        <p className="text-[9px] font-black text-slate-500 uppercase px-3 py-1">Respaldos CSV</p>
-                                                        <button onClick={() => { importFileInputRef.current.click(); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-slate-300 hover:bg-slate-800 rounded-lg transition-colors hover:text-[#8bf5fa]"><UploadCloud size={16} /> Importar CSV</button>
-                                                        <button onClick={() => { exportToCSV(); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-slate-300 hover:bg-slate-800 rounded-lg transition-colors hover:text-[#3f979b]"><FileSpreadsheet size={16} /> Descargar CSV</button>
-                                                        <div className="h-px bg-slate-800 my-1"></div>
-                                                        <p className="text-[9px] font-black text-slate-500 uppercase px-3 py-1">Respaldos JSON</p>
-                                                        <button onClick={() => { importJsonFileInputRef.current.click(); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-slate-300 hover:bg-slate-800 rounded-lg transition-colors hover:text-[#f9f54b]"><UploadCloud size={16} /> Importar JSON</button>
-                                                        <button onClick={() => { exportToJSON(); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-slate-300 hover:bg-slate-800 rounded-lg transition-colors hover:text-[#f9f54b]"><Download size={16} /> Descargar JSON</button>
+                                                        <p className="text-[9px] font-black text-slate-500 uppercase px-3 py-1">Respaldos (JSON)</p>
+                                                        <button onClick={() => { importJsonFileInputRef.current.click(); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-slate-300 hover:bg-slate-800 rounded-lg transition-colors hover:text-[#f9f54b]"><UploadCloud size={16} /> Importar Datos</button>
+                                                        <button onClick={() => { exportToJSON(); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-slate-300 hover:bg-slate-800 rounded-lg transition-colors hover:text-[#f9f54b]"><Download size={16} /> Descargar Backup</button>
                                                         <div className="h-px bg-slate-800 my-1"></div>
                                                         <button onClick={() => { setIsChangePinModalOpen(true); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-slate-300 hover:bg-slate-800 rounded-lg transition-colors hover:text-[#8bf5fa]"><Key size={16} /> Cambiar PIN</button>
                                                         <button onClick={() => { setIsUnlocked(false); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-black text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"><Lock size={16} /> Bloquear App</button>
@@ -906,18 +876,17 @@
                     </div>
 
                     <div className="grid grid-cols-2 gap-3 mb-6">
-                      <div className="col-span-2 bg-[#f9f54b]/10 p-6 rounded-[32px] border border-[#f9f54b]/30 relative overflow-hidden group hover:border-[#f9f54b]/50 transition-colors">
+                      <div className="col-span-2 bg-[#f9f54b]/10 p-6 rounded-[32px] border border-[#f9f54b]/30 relative overflow-hidden group">
                         <div className="absolute top-5 right-5 bg-[#f9f54b]/20 p-2.5 rounded-2xl text-[#f9f54b]"><ArrowUpRight size={22} /></div>
                         <p className="text-[#f9f54b] text-xs font-bold mb-2 opacity-90 uppercase tracking-widest">Deuda Total</p>
                         <h3 className="text-[#f9f54b] text-5xl font-black tracking-tighter mb-1">${stats.pendingUSD} {stats.pendingEUR > 0 && <span className="text-3xl text-[#f9f54b]/70 ml-2">| €{stats.pendingEUR}</span>}</h3>
-                        <p className="text-[#f9f54b] text-[10px] font-bold uppercase tracking-widest opacity-60">Pendiente por cobrar</p>
                       </div>
-                      <div className="bg-[#8bf5fa]/10 p-5 rounded-[28px] border border-[#8bf5fa]/30 relative hover:border-[#8bf5fa]/50 transition-colors">
+                      <div className="bg-[#8bf5fa]/10 p-5 rounded-[28px] border border-[#8bf5fa]/30 relative">
                          <div className="absolute top-4 right-4 bg-[#8bf5fa]/20 p-2 rounded-xl text-[#8bf5fa]"><ArrowDownLeft size={18} /></div>
                         <p className="text-[#8bf5fa] text-[10px] font-bold mb-2 opacity-90 uppercase tracking-widest">Cobrado</p>
-                        <h3 className="text-[#8bf5fa] text-3xl font-black tracking-tighter">${stats.collectedUSD} {stats.collectedEUR > 0 && <span className="text-xl text-[#8bf5fa]/70 ml-1">| €{stats.collectedEUR}</span>}</h3>
+                        <h3 className="text-[#8bf5fa] text-3xl font-black tracking-tighter">${stats.collectedUSD}</h3>
                       </div>
-                      <div className="bg-[#3f979b]/10 p-5 rounded-[28px] border border-[#3f979b]/30 relative hover:border-[#3f979b]/50 transition-colors">
+                      <div className="bg-[#3f979b]/10 p-5 rounded-[28px] border border-[#3f979b]/30 relative">
                         <div className="absolute top-4 right-4 bg-[#3f979b]/20 p-2 rounded-xl text-[#3f979b]"><Users size={18} /></div>
                         <p className="text-[#3f979b] text-[10px] font-bold mb-2 opacity-90 uppercase tracking-widest">Clientes</p>
                         <h3 className="text-[#3f979b] text-3xl font-black tracking-tighter">{clients.length}</h3>
@@ -978,43 +947,6 @@
                   </div>
                 )}
 
-                {activeTab === 'invoice' && (
-                  <div className="animate-in fade-in duration-300">
-                     <div className="bg-slate-900/50 p-5 rounded-3xl border border-slate-800/60 mb-6 shadow-xl">
-                         <div className="flex items-center gap-3 mb-6"><div className="p-2 bg-[#3f979b]/20 rounded-xl"><Receipt size={20} className="text-[#3f979b]" /></div><h2 className="text-lg font-black text-white uppercase tracking-wide">Factura Fiscal</h2></div>
-                         <div className="space-y-5">
-                             <div>
-                                 <label className="text-[10px] font-black text-slate-500 uppercase ml-2 mb-1.5 block">1. Seleccionar Cliente</label>
-                                 <select className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3.5 text-sm font-black text-white outline-none focus:border-[#3f979b]" value={invoiceClientId} onChange={handleInvoiceClientChange}><option value="">-- Elige un cliente para facturar --</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name} ({c.currency || '$'}{c.monthlyFee})</option>)}</select>
-                             </div>
-                             {invoiceClientId && (
-                                 <div className="animate-in fade-in slide-in-from-top-4 space-y-5">
-                                    <div><label className="text-[10px] font-black text-slate-500 uppercase ml-2 mb-1.5 block">2. Tasa BCV del Día (Bs)</label><div className="relative"><span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">Bs.</span><input type="number" step="any" min="0.0001" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3.5 pl-12 text-sm font-black text-white outline-none focus:border-[#3f979b] transition-colors" value={tasaBCV} onChange={e => setTasaBCV(e.target.value)} /></div></div>
-                                    <div className="flex items-center gap-3 bg-slate-950 p-4 rounded-xl border border-slate-800"><div className="flex-1"><p className="text-xs font-black text-slate-300 uppercase">3. Cálculo de IVA</p><p className="text-[9px] text-slate-500 uppercase mt-0.5">{facturaIncludesIva ? 'El monto ya trae IVA incluido' : 'Se sumará el 16% al monto base'}</p></div><button type="button" onClick={() => setFacturaIncludesIva(!facturaIncludesIva)} className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${facturaIncludesIva ? 'bg-[#3f979b]' : 'bg-slate-700'}`}><span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${facturaIncludesIva ? 'translate-x-6' : 'translate-x-1'}`} /></button></div>
-                                    {tasaBCV && (
-                                        <div className="bg-[#3f979b]/10 border border-[#3f979b]/30 p-5 rounded-2xl relative mt-4 shadow-inner">
-                                            <div className="absolute top-4 right-4"><button onClick={generarFacturaLegalPDF} className="bg-[#3f979b] hover:bg-[#327a7d] text-white p-3 rounded-xl shadow-lg shadow-[#3f979b]/30 transition-transform active:scale-95 flex items-center gap-2" title="Generar PDF"><Printer size={18} /><span className="text-[10px] font-black uppercase">Imprimir PDF</span></button></div>
-                                            <h3 className="text-[10px] font-black text-[#8bf5fa] uppercase mb-4 border-b border-[#3f979b]/30 pb-2 w-[70%] tracking-widest">Previsualización</h3>
-                                            {(() => {
-                                                const clientToInvoice = clients.find(c => c.id === invoiceClientId); const rate = Number(tasaBCV); const fee = Number(clientToInvoice?.monthlyFee || 0);
-                                                let base, iva, total; if (facturaIncludesIva) { total = fee * rate; base = total / 1.16; iva = total - base; } else { base = fee * rate; iva = base * 0.16; total = base + iva; }
-                                                return (
-                                                    <div className="space-y-2">
-                                                        <div className="flex justify-between text-xs font-bold text-[#8bf5fa]/80"><span>Base Imponible:</span> <span>Bs. {base.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
-                                                        <div className="flex justify-between text-xs font-bold text-[#8bf5fa]/80"><span>IVA (16%):</span> <span>Bs. {iva.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
-                                                        <div className="flex justify-between text-sm font-black text-white pt-2 border-t border-[#3f979b]/30 mt-2"><span>Total Factura:</span> <span>Bs. {total.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
-                                                    </div>
-                                                );
-                                            })()}
-                                        </div>
-                                    )}
-                                 </div>
-                             )}
-                         </div>
-                     </div>
-                  </div>
-                )}
-
                 {(activeTab === 'list' || activeTab === 'clients') && (
                   <div className="animate-in fade-in duration-300">
                     {activeTab === 'clients' && (<div className="flex items-center justify-between mb-6 bg-slate-900/50 p-4 rounded-3xl border border-slate-800/60 shadow-xl"><div className="flex items-center gap-3"><div className="p-2 bg-[#3f979b]/20 rounded-xl"><Users size={20} className="text-[#3f979b]" /></div><h2 className="text-lg font-black text-white uppercase tracking-wide">Directorio de Clientes</h2></div><span className="bg-slate-800 text-[#8bf5fa] px-3 py-1 rounded-lg text-[10px] font-black">{filteredClients.length} Registros</span></div>)}
@@ -1025,13 +957,20 @@
                     </div>
                     <div className="space-y-4">
                       {filteredClients.map(client => {
-                        const status = getClientStatus(client); const paid = getPaidAmount(client.id); const remaining = client.monthlyFee - paid; const progressPercent = Math.min((paid / client.monthlyFee) * 100, 100);
+                        const status = getClientStatus(client); 
+                        const paid = getPaidAmount(client.id); 
+                        const extrasTotal = getClientExtrasTotal(client.id);
+                        const totalAmount = client.monthlyFee + extrasTotal;
+                        const remaining = totalAmount - paid; 
+                        const progressPercent = Math.min((paid / totalAmount) * 100, 100);
+
                         return (
                           <div key={client.id} className="bg-slate-900/40 p-4 rounded-3xl border border-slate-800/60 flex flex-col gap-4 relative overflow-hidden group">
                             <div className="absolute bottom-0 left-0 h-1 bg-gradient-to-r from-[#3f979b] to-[#8bf5fa] transition-all duration-500" style={{ width: `${progressPercent}%` }} />
                             <div className="flex items-center justify-between"><div className="flex items-center gap-4"><div className="w-12 h-12 min-w-[48px] rounded-2xl flex items-center justify-center bg-slate-800 border border-slate-700 overflow-hidden shadow-inner">{client.clientLogo ? <img src={client.clientLogo} className="w-full h-full object-cover" alt={client.name} /> : <span className="font-black text-slate-600 text-lg uppercase">{client.name.charAt(0)}</span>}</div><div className="overflow-hidden"><h3 className="font-black text-white text-sm truncate w-40 leading-tight mb-1">{client.name}</h3><div className="flex items-center gap-2"><span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wide border ${status.color}`}>{status.label}</span><span className="text-[9px] font-bold text-slate-500 uppercase tracking-tight">• Día {client.billingDay}</span></div></div></div></div>
-                            <div className="grid grid-cols-2 gap-2 bg-slate-950/30 p-2.5 rounded-2xl border border-slate-800/40">
-                                <div><p className="text-[7px] font-black text-slate-600 uppercase mb-0.5 tracking-wider">Abonado</p><p className="text-sm font-black text-slate-200">{client.currency || '$'}{paid} <span className="text-[10px] text-slate-500 font-medium">/ {client.currency || '$'}{client.monthlyFee}</span></p></div>
+                            <div className="grid grid-cols-2 gap-2 bg-slate-950/30 p-2.5 rounded-2xl border border-slate-800/40 relative">
+                                {extrasTotal > 0 && (<div className="absolute -top-3 right-2 bg-[#f9f54b] text-slate-900 px-2 py-0.5 rounded-full text-[8px] font-black flex items-center gap-1 shadow-lg shadow-[#f9f54b]/20"><PackagePlus size={10} /> + {client.currency || '$'}{extrasTotal} en extras</div>)}
+                                <div><p className="text-[7px] font-black text-slate-600 uppercase mb-0.5 tracking-wider">Abonado</p><p className="text-sm font-black text-slate-200">{client.currency || '$'}{paid} <span className="text-[10px] text-slate-500 font-medium">/ {client.currency || '$'}{totalAmount}</span></p></div>
                                 <div className="text-right"><p className="text-[7px] font-black text-slate-600 uppercase mb-0.5 tracking-wider">Pendiente</p><p className={`text-sm font-black ${remaining > 0 ? 'text-[#f9f54b]' : 'text-emerald-400'}`}>{remaining > 0 ? `${client.currency || '$'}${remaining}` : 'COMPLETO'}</p></div>
                             </div>
                             <div className="flex flex-wrap gap-2 pt-2 justify-start">
@@ -1039,13 +978,13 @@
                                     <>
                                         <button onClick={() => openReceipt(client, 'cobro')} className="flex-grow min-w-[80px] bg-[#3f979b] text-white py-2 px-3 rounded-xl font-black text-[9px] uppercase flex items-center justify-center gap-2 shadow-lg shadow-[#3f979b]/20 active:scale-95 transition-transform hover:bg-[#327a7d]"><FileText size={16}/> Cobrar</button>
                                         <button onClick={() => setIsAbonoModalOpen(client.id)} className="flex-grow min-w-[70px] bg-slate-800 text-white py-2 px-3 rounded-xl font-black text-[9px] uppercase active:scale-95 transition-transform hover:bg-slate-700 border border-slate-700">Abonar</button>
-                                        <button onClick={() => addToCalendar(client)} className="flex-none p-2 bg-slate-800/50 text-slate-400 border border-slate-700 rounded-xl flex items-center justify-center active:scale-95 transition-all hover:bg-slate-700 hover:text-[#f9f54b]" title="Calendario"><CalendarPlus size={16} /></button>
-                                        <button onClick={() => { setAiTargetClient(client); setAiMessageType('cobro'); setGeneratedText(''); setIsAIModalOpen(true); }} className="flex-none p-2 bg-gradient-to-r from-[#3f979b]/20 to-[#8bf5fa]/20 text-[#8bf5fa] border border-[#8bf5fa]/30 rounded-xl flex items-center justify-center active:scale-95 transition-all hover:from-[#3f979b]/40 hover:to-[#8bf5fa]/40" title="IA"><Sparkles size={16} /></button>
+                                        <button onClick={() => setIsExtraModalOpen(client.id)} className="flex-none p-2 bg-slate-800/50 text-slate-400 border border-slate-700 rounded-xl flex items-center justify-center active:scale-95 transition-all hover:bg-slate-700 hover:text-[#f9f54b]" title="Añadir Cargo Extra"><PackagePlus size={16} /></button>
                                         <button onClick={() => handleFullPayment(client)} className="flex-none p-2 bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 rounded-xl flex items-center justify-center active:scale-95 transition-all hover:bg-emerald-500/20" title="Pagado"><Check size={16} strokeWidth={4} /></button>
                                     </>
                                 ) : (
                                     <>
                                         <button onClick={() => openReceipt(client, 'pago')} className="flex-grow min-w-[120px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 py-2 px-3 rounded-xl font-black text-[9px] uppercase flex items-center justify-center gap-2 active:scale-95 transition-transform hover:bg-emerald-500/20"><Printer size={16}/> Recibo de Pago</button>
+                                        <button onClick={() => setIsExtraModalOpen(client.id)} className="flex-none p-2 bg-slate-800/50 text-slate-400 border border-slate-700 rounded-xl flex items-center justify-center active:scale-95 transition-all hover:bg-slate-700 hover:text-[#f9f54b]" title="Añadir Cargo Extra"><PackagePlus size={16} /></button>
                                         <button onClick={() => revertPayment(client)} className="flex-none p-2 bg-red-500/10 text-red-500 border border-red-500/20 rounded-xl flex items-center justify-center active:scale-95 transition-all hover:bg-red-500/20" title="Revertir Pago"><RotateCcw size={16} strokeWidth={2.5} /></button>
                                     </>
                                 )}
@@ -1087,11 +1026,11 @@
                         <div className="space-y-3">
                           {clients.filter(c => Number(c.billingDay) === selectedCalendarDay).length === 0 ? (<div className="bg-slate-900/40 border border-slate-800 border-dashed rounded-3xl p-8 text-center"><p className="text-xs text-slate-500 font-bold uppercase tracking-wide">Día libre de cobros 🎉</p></div>) : (
                             clients.filter(c => Number(c.billingDay) === selectedCalendarDay).map(client => {
-                              const status = getClientStatus(client);
+                              const status = getClientStatus(client); const extrasTotal = getClientExtrasTotal(client.id); const totalAmount = client.monthlyFee + extrasTotal;
                               return (
                                 <div key={client.id} className="bg-slate-900/60 p-4 rounded-3xl border border-slate-800/80 flex items-center justify-between hover:border-[#8bf5fa]/30 transition-colors">
                                   <div className="flex items-center gap-4"><div className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center overflow-hidden">{client.clientLogo ? <img src={client.clientLogo} className="w-full h-full object-cover" /> : <span className="font-black text-[#f9f54b] text-sm">{client.name.charAt(0)}</span>}</div><div><h5 className="font-black text-white text-xs truncate w-32">{client.name}</h5><div className="flex gap-2 mt-1"><span className={`text-[8px] font-black px-1.5 py-0.5 rounded border ${status.color}`}>{status.label}</span></div></div></div>
-                                  <div className="text-right flex flex-col items-end gap-2"><p className="text-xs font-black text-white">{client.currency || '$'}{client.monthlyFee}</p><div className="flex gap-1"><button onClick={() => { setActiveTab('list'); setSearchTerm(client.name); window.scrollTo({top:0, behavior:'smooth'}); }} className="flex items-center gap-1 text-[9px] font-black text-[#8bf5fa] uppercase hover:text-white bg-[#8bf5fa]/10 px-2 py-1 rounded-lg transition-colors border border-[#8bf5fa]/20">Ficha <ArrowUpRight size={10}/></button></div></div>
+                                  <div className="text-right flex flex-col items-end gap-2"><p className="text-xs font-black text-white">{client.currency || '$'}{totalAmount}</p><div className="flex gap-1"><button onClick={() => { setActiveTab('list'); setSearchTerm(client.name); window.scrollTo({top:0, behavior:'smooth'}); }} className="flex items-center gap-1 text-[9px] font-black text-[#8bf5fa] uppercase hover:text-white bg-[#8bf5fa]/10 px-2 py-1 rounded-lg transition-colors border border-[#8bf5fa]/20">Ficha <ArrowUpRight size={10}/></button></div></div>
                                 </div>
                               );
                             })
@@ -1101,10 +1040,73 @@
                     )}
                   </div>
                 )}
+
+                {activeTab === 'invoice' && (
+                  <div className="animate-in fade-in duration-300">
+                     <div className="bg-slate-900/50 p-5 rounded-3xl border border-slate-800/60 mb-6 shadow-xl">
+                         <div className="flex items-center gap-3 mb-6"><div className="p-2 bg-[#3f979b]/20 rounded-xl"><Receipt size={20} className="text-[#3f979b]" /></div><h2 className="text-lg font-black text-white uppercase tracking-wide">Factura Fiscal</h2></div>
+                         <div className="space-y-5">
+                             <div>
+                                 <label className="text-[10px] font-black text-slate-500 uppercase ml-2 mb-1.5 block">1. Seleccionar Cliente</label>
+                                 <select className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3.5 text-sm font-black text-white outline-none focus:border-[#3f979b]" value={invoiceClientId} onChange={handleInvoiceClientChange}><option value="">-- Elige un cliente para facturar --</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name} ({c.currency || '$'}{c.monthlyFee})</option>)}</select>
+                             </div>
+                             {invoiceClientId && (
+                                 <div className="animate-in fade-in slide-in-from-top-4 space-y-5">
+                                    <div><label className="text-[10px] font-black text-slate-500 uppercase ml-2 mb-1.5 block">2. Tasa BCV del Día (Bs)</label><div className="relative"><span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">Bs.</span><input type="number" step="any" min="0.0001" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3.5 pl-12 text-sm font-black text-white outline-none focus:border-[#3f979b] transition-colors" value={tasaBCV} onChange={e => setTasaBCV(e.target.value)} /></div></div>
+                                    <div className="flex items-center gap-3 bg-slate-950 p-4 rounded-xl border border-slate-800"><div className="flex-1"><p className="text-xs font-black text-slate-300 uppercase">3. Cálculo de IVA</p><p className="text-[9px] text-slate-500 uppercase mt-0.5">{facturaIncludesIva ? 'El monto ya trae IVA incluido' : 'Se sumará el 16% al monto base'}</p></div><button type="button" onClick={() => setFacturaIncludesIva(!facturaIncludesIva)} className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${facturaIncludesIva ? 'bg-[#3f979b]' : 'bg-slate-700'}`}><span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${facturaIncludesIva ? 'translate-x-6' : 'translate-x-1'}`} /></button></div>
+                                    {tasaBCV && (
+                                        <div className="bg-[#3f979b]/10 border border-[#3f979b]/30 p-5 rounded-2xl relative mt-4 shadow-inner">
+                                            <div className="absolute top-4 right-4"><button onClick={generarFacturaLegalPDF} className="bg-[#3f979b] hover:bg-[#327a7d] text-white p-3 rounded-xl shadow-lg shadow-[#3f979b]/30 transition-transform active:scale-95 flex items-center gap-2" title="Generar PDF"><Printer size={18} /><span className="text-[10px] font-black uppercase">Imprimir PDF</span></button></div>
+                                            <h3 className="text-[10px] font-black text-[#8bf5fa] uppercase mb-4 border-b border-[#3f979b]/30 pb-2 w-[70%] tracking-widest">Previsualización</h3>
+                                            {(() => {
+                                                const clientToInvoice = clients.find(c => c.id === invoiceClientId); const rate = Number(tasaBCV); const extrasTotal = getClientExtrasTotal(clientToInvoice.id); const fee = Number(clientToInvoice?.monthlyFee || 0) + extrasTotal;
+                                                let base, iva, total; if (facturaIncludesIva) { total = fee * rate; base = total / 1.16; iva = total - base; } else { base = fee * rate; iva = base * 0.16; total = base + iva; }
+                                                return (
+                                                    <div className="space-y-2">
+                                                        <div className="flex justify-between text-xs font-bold text-[#8bf5fa]/80"><span>Base Imponible:</span> <span>Bs. {base.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
+                                                        <div className="flex justify-between text-xs font-bold text-[#8bf5fa]/80"><span>IVA (16%):</span> <span>Bs. {iva.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
+                                                        <div className="flex justify-between text-sm font-black text-white pt-2 border-t border-[#3f979b]/30 mt-2"><span>Total Factura:</span> <span>Bs. {total.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
+                                                    </div>
+                                                );
+                                            })()}
+                                        </div>
+                                    )}
+                                 </div>
+                             )}
+                         </div>
+                     </div>
+                  </div>
+                )}
                 
                 <div className="h-40 w-full" />
 
-                {/* --- MODALES --- */}
+                {/* MODALES GLOBALES */}
+                {isExtraModalOpen && (
+                  <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+                    <div className="bg-slate-900 border border-slate-800 w-full max-w-[320px] rounded-[32px] overflow-hidden shadow-2xl animate-in zoom-in duration-200 flex flex-col">
+                      <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/30"><div className="flex items-center gap-2"><PackagePlus size={18} className="text-[#f9f54b]" /><h2 className="font-black text-sm text-white uppercase tracking-wide">Cobros Extra</h2></div><button onClick={() => setIsExtraModalOpen(null)} className="text-slate-500 hover:text-white"><X size={20}/></button></div>
+                      <div className="p-5 bg-slate-900">
+                          <h3 className="text-[10px] font-black text-slate-400 uppercase mb-3 tracking-widest">Extras del mes en curso</h3>
+                          <div className="space-y-2 mb-6 max-h-32 overflow-y-auto pr-1">
+                              {getClientExtras(isExtraModalOpen).length === 0 ? (<p className="text-xs text-slate-600 italic text-center py-2">No hay cobros extra este mes.</p>) : (
+                                  getClientExtras(isExtraModalOpen).map(extra => (
+                                      <div key={extra.id} className="bg-slate-950/50 border border-slate-800 p-3 rounded-xl flex items-center justify-between group"><div className="flex-1 min-w-0 pr-2"><p className="text-xs font-bold text-white truncate">{extra.description}</p><p className="text-[10px] font-black text-[#f9f54b]">{clients.find(c=>c.id === isExtraModalOpen)?.currency || '$'}{extra.amount}</p></div><button onClick={() => deleteExtra(extra.id)} className="text-slate-500 hover:text-red-500 transition-colors p-1" title="Eliminar"><Trash2 size={14}/></button></div>
+                                  ))
+                              )}
+                          </div>
+                          <div className="border-t border-slate-800 pt-4">
+                              <h3 className="text-[10px] font-black text-[#8bf5fa] uppercase mb-3 tracking-widest">Añadir Nuevo Extra</h3>
+                              <form onSubmit={saveExtra} className="space-y-3">
+                                <input required type="text" placeholder="Concepto (Ej: Logo extra)" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white outline-none focus:border-[#f9f54b] transition-colors" value={extraForm.description} onChange={e => setExtraForm({...extraForm, description: e.target.value})} />
+                                <div className="relative"><span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 font-bold">{clients.find(c => c.id === isExtraModalOpen)?.currency || '$'}</span><input required type="number" step="any" placeholder="Monto" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 pl-10 text-sm font-black text-white outline-none focus:border-[#f9f54b] transition-colors" value={extraForm.amount} onChange={e => setExtraForm({...extraForm, amount: e.target.value})} /></div>
+                                <button type="submit" className="w-full bg-[#f9f54b] text-slate-900 font-black py-3 rounded-xl uppercase text-[10px] hover:bg-[#e5e13b] transition-colors flex items-center justify-center gap-2 mt-2"><Plus size={14}/> Registrar Cargo</button>
+                              </form>
+                          </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {isHistoryModalOpen && historyClient && (
                     <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[150] flex items-center justify-center p-4">
                         <div className="bg-slate-900 border border-slate-800 w-full max-w-[320px] max-h-[80vh] rounded-[32px] overflow-hidden shadow-2xl animate-in zoom-in duration-200 flex flex-col">
@@ -1162,7 +1164,7 @@
                         <div className="space-y-3"><input required type="text" placeholder="Nombre del Cliente/Marca" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white outline-none focus:border-[#8bf5fa]" value={newClient.name} onChange={e => setNewClient({...newClient, name: e.target.value})} /><input type="text" placeholder="Servicio (ej. Redes Sociales)" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white outline-none focus:border-[#8bf5fa]" value={newClient.service} onChange={e => setNewClient({...newClient, service: e.target.value})} /></div>
                         <div className="grid grid-cols-3 gap-3">
                           <div><label className="text-[9px] font-black text-[#8bf5fa] uppercase ml-2">Moneda</label><select className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-black text-white outline-none focus:border-[#8bf5fa]" value={newClient.currency || '$'} onChange={e => setNewClient({...newClient, currency: e.target.value})}><option value="$">USD ($)</option><option value="€">EUR (€)</option></select></div>
-                          <div><label className="text-[9px] font-black text-[#8bf5fa] uppercase ml-2">Monto</label><input required type="number" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-black text-white outline-none focus:border-[#8bf5fa]" value={newClient.monthlyFee} onChange={e => setNewClient({...newClient, monthlyFee: e.target.value})} /></div>
+                          <div><label className="text-[9px] font-black text-[#8bf5fa] uppercase ml-2">Mensualidad</label><input required type="number" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-black text-white outline-none focus:border-[#8bf5fa]" value={newClient.monthlyFee} onChange={e => setNewClient({...newClient, monthlyFee: e.target.value})} /></div>
                           <div><label className="text-[9px] font-black text-[#8bf5fa] uppercase ml-2">Día</label><input required type="number" min="1" max="31" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-black text-white outline-none focus:border-[#8bf5fa]" value={newClient.billingDay} onChange={e => setNewClient({...newClient, billingDay: e.target.value})} /></div>
                         </div>
                         <button type="submit" className="w-full bg-[#3f979b] hover:bg-[#327a7d] text-white font-black py-4 rounded-xl uppercase text-[10px] mt-4 transition-colors shadow-lg shadow-[#3f979b]/20">{newClient.id ? 'Actualizar Cliente' : 'Guardar Cliente'}</button>
