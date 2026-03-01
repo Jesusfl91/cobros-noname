@@ -8,8 +8,10 @@
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- Capturador de Errores para evitar la pantalla azul vacía -->
+    <!-- Parche de Entorno para React en Navegador -->
     <script>
+        window.process = { env: { NODE_ENV: 'production' } };
+        // Capturador de Errores en Pantalla
         window.addEventListener('error', function(event) {
             document.body.innerHTML += '<div style="background:#fee2e2; color:#b91c1c; padding:20px; position:fixed; top:0; left:0; right:0; z-index:9999; font-family:sans-serif;"><b>Error Crítico:</b> ' + event.message + '<br><small>' + event.filename + ' línea ' + event.lineno + '</small></div>';
         });
@@ -18,16 +20,13 @@
     <!-- Babel standalone para compilar JSX en el navegador -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    <!-- Mapa de Importaciones Corregido (Firebase Oficial + Lucide Bundled) -->
+    <!-- Mapa de Importaciones (SOLO REACT Y LUCIDE, FIREBASE VA DIRECTO) -->
     <script type="importmap">
     {
       "imports": {
         "react": "https://esm.sh/react@18.2.0",
         "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
-        "lucide-react": "https://esm.sh/lucide-react@0.263.0?bundle",
-        "firebase/app": "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js",
-        "firebase/auth": "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js",
-        "firebase/firestore": "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js"
+        "lucide-react": "https://esm.sh/lucide-react@0.263.0?deps=react@18.2.0"
       }
     }
     </script>
@@ -48,12 +47,13 @@
           MoreVertical, Lock, Key, Settings, PackagePlus
         } from 'lucide-react';
         
-        import { initializeApp } from 'firebase/app';
-        import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-        import { getFirestore, collection, doc, setDoc, onSnapshot, addDoc, deleteDoc } from 'firebase/firestore';
+        // 🔥 Importaciones directas desde Google CDN (Evita el error de Auth) 🔥
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js';
+        import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js';
+        import { getFirestore, collection, doc, setDoc, onSnapshot, addDoc, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js';
 
         // =====================================================================
-        // 🔥 TU CONFIGURACIÓN REAL DE FIREBASE 🔥
+        // 🔥 CONFIGURACIÓN REAL DE FIREBASE 🔥
         // =====================================================================
         const firebaseConfig = {
           apiKey: "AIzaSyB_7s03qxv_0LxyFupa8oySd21FqaNXaP4",
@@ -70,7 +70,7 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const appId = 'marketing-crm-final-v5'; // ID único para tu base de datos
+        const appId = 'marketing-crm-final-v5'; 
 
         const App = () => {
           const [user, setUser] = useState(null);
@@ -785,7 +785,7 @@
             return result;
           }, [clients, payments, extras, searchTerm, filterStatus, monthYearKey, sortBy]);
 
-          // --- Variables de Calendario y Fechas (CORRECCIÓN) ---
+          // --- Variables de Calendario y Fechas (ASEGURADAS) ---
           const monthName = selectedDate.toLocaleString('es-ES', { month: 'long', year: 'numeric' });
           const currentYear = selectedDate.getFullYear();
           const currentMonth = selectedDate.getMonth();
@@ -880,6 +880,7 @@
                                         <input type="text" className="text-2xl font-black text-white tracking-tighter uppercase leading-none italic bg-transparent border-none w-full outline-none placeholder-slate-500 p-0 m-0 focus:ring-0 text-center sm:text-left drop-shadow-lg" placeholder="NOMBRE DE AGENCIA" value={agencyName} onChange={(e) => { setAgencyName(e.target.value); setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'agency'), { name: e.target.value }, { merge: true }); }} />
                                         <p className="text-[9px] font-bold text-[#8bf5fa] uppercase tracking-widest mt-1">Panel de Control</p>
                                     </div>
+                                    
                                     <div className="relative shrink-0 flex justify-center sm:justify-end mt-2 sm:mt-0">
                                         <button onClick={() => setIsHeaderMenuOpen(!isHeaderMenuOpen)} className="p-2.5 bg-slate-800 rounded-xl hover:bg-slate-700 transition-colors border border-slate-700 shadow-lg relative" title="Más opciones">
                                             <MoreVertical size={20} className="text-slate-400 hover:text-white transition-colors" />
