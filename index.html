@@ -785,6 +785,16 @@
             return result;
           }, [clients, payments, extras, searchTerm, filterStatus, monthYearKey, sortBy]);
 
+          // --- Lógica de Notificaciones (RESTAURADA) ---
+          const notifications = useMemo(() => {
+            const today = new Date(); const currentDay = today.getDate(); const realTimeMonthKey = `${today.getFullYear()}-${today.getMonth() + 1}`;
+            return clients.filter(c => {
+                const isBillingDay = Number(c.billingDay) === currentDay;
+                const paidAmountRealTime = payments[`${c.id}_${realTimeMonthKey}`] || 0;
+                return isBillingDay && paidAmountRealTime < c.monthlyFee;
+            });
+          }, [clients, payments]);
+
           // --- Variables de Calendario y Fechas (ASEGURADAS) ---
           const monthName = selectedDate.toLocaleString('es-ES', { month: 'long', year: 'numeric' });
           const currentYear = selectedDate.getFullYear();
