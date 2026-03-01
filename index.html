@@ -785,6 +785,15 @@
             return result;
           }, [clients, payments, extras, searchTerm, filterStatus, monthYearKey, sortBy]);
 
+          // --- Variables de Calendario y Fechas (CORRECCIÓN) ---
+          const monthName = selectedDate.toLocaleString('es-ES', { month: 'long', year: 'numeric' });
+          const currentYear = selectedDate.getFullYear();
+          const currentMonth = selectedDate.getMonth();
+          const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+          const firstDayOfMonth = new Date(currentYear, currentMonth, 1).getDay();
+          const calendarDays = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+          const emptyStartDays = Array.from({ length: firstDayOfMonth }, (_, i) => i);
+
           if (authLoading || !isSettingsLoaded) return (
             <div className="h-screen bg-[#020617] flex items-center justify-center"><Loader2 className="animate-spin text-[#8bf5fa]" size={40} /></div>
           );
