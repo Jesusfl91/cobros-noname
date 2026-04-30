@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agencia - CRM de Cobros</title>
+    <title>Agencia - CRM de Cobros y Nómina</title>
     
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -20,7 +20,7 @@
     <!-- Babel standalone para compilar JSX en el navegador -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    <!-- Mapa de Importaciones (SOLO REACT Y LUCIDE, FIREBASE VA DIRECTO) -->
+    <!-- Mapa de Importaciones -->
     <script type="importmap">
     {
       "imports": {
@@ -44,16 +44,17 @@
           CheckCircle2, Check, Bell, CalendarPlus, Sparkles, Copy, RefreshCw, 
           MessageSquare, ArrowUpRight, ArrowDownLeft, History, Download, 
           FileSpreadsheet, Pencil, UploadCloud, Receipt, Calculator, RotateCcw, 
-          MoreVertical, Lock, Key, Settings, PackagePlus
+          MoreVertical, Lock, Key, Settings, PackagePlus, Briefcase, UserPlus,
+          Banknote, Send, Mail
         } from 'lucide-react';
         
-        // 🔥 Importaciones directas desde Google CDN (Evita el error de Auth) 🔥
+        // 🔥 Importaciones directas desde Google CDN 🔥
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js';
         import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js';
         import { getFirestore, collection, doc, setDoc, onSnapshot, addDoc, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js';
 
         // =====================================================================
-        // 🔥 CONFIGURACIÓN REAL DE FIREBASE 🔥
+        // 🔥 TU CONFIGURACIÓN REAL DE FIREBASE 🔥
         // =====================================================================
         const firebaseConfig = {
           apiKey: "AIzaSyB_7s03qxv_0LxyFupa8oySd21FqaNXaP4",
@@ -66,7 +67,6 @@
         };
         // =====================================================================
 
-        // Inicialización de Firebase
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
@@ -80,6 +80,30 @@
           const [allPaymentsRaw, setAllPaymentsRaw] = useState([]); 
           const [extras, setExtras] = useState([]); 
           
+          // --- Estados NÓMINA ---
+          const [employees, setEmployees] = useState([]);
+          const [payrollHistory, setPayrollHistory] = useState([]);
+          const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState(false);
+          const [isPayrollModalOpen, setIsPayrollModalOpen] = useState(false);
+          const [isEmployeeHistoryModalOpen, setIsEmployeeHistoryModalOpen] = useState(null);
+          const [selectedEmployee, setSelectedEmployee] = useState(null);
+          
+          const [newEmployee, setNewEmployee] = useState({
+            id: '', name: '', cedula: '', email: '', phone: '', paymentMethods: '', baseSalary: ''
+          });
+          const [payrollForm, setPayrollForm] = useState({
+            paymentMode: 'quincena',
+            basePaymentUSD: '',
+            rateBCV: '', 
+            description: 'Sueldo Regular', 
+            extraUSD: '',
+            extraDescription: '',
+            periodType: '1ra Quincena', 
+            month: new Date().getMonth(), 
+            year: new Date().getFullYear()
+          });
+
+          // --- Estados Agencia ---
           const [agencyLogo, setAgencyLogo] = useState(null);
           const [agencyBanner, setAgencyBanner] = useState(null);
           const [agencyName, setAgencyName] = useState("No Name Agency");
@@ -95,6 +119,7 @@
           const [filterStatus, setFilterStatus] = useState('all');
           const [sortBy, setSortBy] = useState('billingDay'); 
 
+          // Modales Varios
           const [isModalOpen, setIsModalOpen] = useState(false);
           const [isAbonoModalOpen, setIsAbonoModalOpen] = useState(null);
           const [isNotifOpen, setIsNotifOpen] = useState(false);
@@ -146,31 +171,19 @@
           const importFileInputRef = useRef(null);
           const importJsonFileInputRef = useRef(null);
 
+          const mesesNombres = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+
           const enviarNotificacionTelegram = async (mensaje) => {
             const token = '8260372966:AAEvVQrjYrQBBc7jJbYjf91YdG8osqYYWOw';
             const chatId = '-1003528479716';
             const url = `https://api.telegram.org/bot${token}/sendMessage`;
-
-            try {
-                await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chat_id: chatId, text: mensaje, parse_mode: 'Markdown' })
-                });
-            } catch (error) {
-                console.error("Error al enviar notificación a Telegram:", error);
-            }
+            try { await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: chatId, text: mensaje, parse_mode: 'Markdown' }) }); } 
+            catch (error) { console.error("Error Telegram:", error); }
           };
 
           useEffect(() => {
             const initAuth = async () => {
-              try {
-                await signInAnonymously(auth);
-              } catch (error) {
-                console.error("Error Auth:", error);
-              } finally {
-                setAuthLoading(false);
-              }
+              try { await signInAnonymously(auth); } catch (error) { console.error("Error Auth:", error); } finally { setAuthLoading(false); }
             };
             initAuth();
             const unsubscribe = onAuthStateChanged(auth, (currentUser) => setUser(currentUser));
@@ -178,89 +191,65 @@
             const fetchRates = async () => {
                 setRates(prev => ({...prev, loading: true, error: false}));
                 try {
-                    const [usdRes, eurRes] = await Promise.all([
-                        fetch('https://ve.dolarapi.com/v1/dolares/oficial'),
-                        fetch('https://ve.dolarapi.com/v1/euros/oficial')
-                    ]);
-                    const usdData = await usdRes.json();
-                    const eurData = await eurRes.json();
-                    const currentUsd = usdData.promedio || 0;
-                    const currentEur = eurData.promedio || 0;
+                    const [usdRes, eurRes] = await Promise.all([fetch('https://ve.dolarapi.com/v1/dolares/oficial'), fetch('https://ve.dolarapi.com/v1/euros/oficial')]);
+                    const usdData = await usdRes.json(); const eurData = await eurRes.json();
+                    const currentUsd = usdData.promedio || 0; const currentEur = eurData.promedio || 0;
                     setRates({ usd: currentUsd, eur: currentEur, loading: false, error: false });
-                    setCalc(prev => ({
-                        ...prev,
-                        customUsd: prev.customUsd || currentUsd.toString(),
-                        customEur: prev.customEur || currentEur.toString()
-                    }));
-                } catch (error) {
-                    console.error("Error fetching rates", error);
-                    setRates(prev => ({...prev, loading: false, error: true}));
-                }
+                    setCalc(prev => ({ ...prev, customUsd: prev.customUsd || currentUsd.toString(), customEur: prev.customEur || currentEur.toString() }));
+                } catch (error) { console.error("Error fetching rates", error); setRates(prev => ({...prev, loading: false, error: true})); }
             };
             fetchRates();
-
             return () => unsubscribe();
           }, []);
 
           useEffect(() => {
             if (!user) return;
-
             const clientsRef = collection(db, 'artifacts', appId, 'public', 'data', 'clients');
             const paymentsRef = collection(db, 'artifacts', appId, 'public', 'data', 'payments');
             const extrasRef = collection(db, 'artifacts', appId, 'public', 'data', 'extras');
             const agencyRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'agency');
+            const empRef = collection(db, 'artifacts', appId, 'public', 'data', 'employees');
+            const payrollRef = collection(db, 'artifacts', appId, 'public', 'data', 'payroll_payments');
 
             const unsubClients = onSnapshot(clientsRef, (snapshot) => {
               const loadedClients = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
               loadedClients.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
               setClients(loadedClients);
-            }, (error) => console.error("Error clients:", error));
-
+            });
             const unsubPayments = onSnapshot(paymentsRef, (snapshot) => {
-              const pMap = {};
-              const rawList = [];
-              snapshot.docs.forEach(d => { 
-                const data = d.data();
-                pMap[`${data.clientId}_${data.monthYear}`] = data.amount; 
-                rawList.push({ id: d.id, ...data });
-              });
-              setPayments(pMap);
-              setAllPaymentsRaw(rawList); 
-            }, (error) => console.error("Error payments:", error));
-
+              const pMap = {}; const rawList = [];
+              snapshot.docs.forEach(d => { const data = d.data(); pMap[`${data.clientId}_${data.monthYear}`] = data.amount; rawList.push({ id: d.id, ...data }); });
+              setPayments(pMap); setAllPaymentsRaw(rawList); 
+            });
             const unsubExtras = onSnapshot(extrasRef, (snapshot) => {
-                const loadedExtras = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-                setExtras(loadedExtras);
-            }, (error) => console.error("Error extras:", error));
-
+                const loadedExtras = snapshot.docs.map(d => ({ id: d.id, ...d.data() })); setExtras(loadedExtras);
+            });
+            const unsubEmp = onSnapshot(empRef, (snapshot) => {
+                const loadedEmps = snapshot.docs.map(d => ({ id: d.id, ...d.data() })); setEmployees(loadedEmps);
+            });
+            const unsubPayroll = onSnapshot(payrollRef, (snapshot) => {
+                const loadedPayroll = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                loadedPayroll.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+                setPayrollHistory(loadedPayroll);
+            });
             const unsubAgency = onSnapshot(agencyRef, (d) => {
               setIsSettingsLoaded(true);
               if (d.exists()) {
                 const data = d.data();
-                if (data.logo) setAgencyLogo(data.logo);
-                if (data.banner) setAgencyBanner(data.banner);
-                if (data.name) setAgencyName(data.name);
-                if (data.phone) setAgencyPhone(data.phone);
-                if (data.email) setAgencyEmail(data.email);
-                if (data.pinCode !== undefined) setAppPin(data.pinCode);
-                else setAppPin('');
-              } else {
-                setAppPin('');
-              }
+                if (data.logo) setAgencyLogo(data.logo); if (data.banner) setAgencyBanner(data.banner); if (data.name) setAgencyName(data.name);
+                if (data.phone) setAgencyPhone(data.phone); if (data.email) setAgencyEmail(data.email);
+                if (data.pinCode !== undefined) setAppPin(data.pinCode); else setAppPin('');
+              } else { setAppPin(''); }
             });
 
-            return () => { unsubClients(); unsubPayments(); unsubExtras(); unsubAgency(); };
+            return () => { unsubClients(); unsubPayments(); unsubExtras(); unsubAgency(); unsubEmp(); unsubPayroll(); };
           }, [user]);
 
           useEffect(() => {
             if (!user || clients.length === 0) return;
-
             const checkAndSendDailyNotifications = () => {
-                const now = new Date();
-                const currentHour = now.getHours();
-                const currentDay = now.getDate();
-                const todayStr = now.toLocaleDateString('es-ES');
-                const monthKey = `${now.getFullYear()}-${now.getMonth() + 1}`;
+                const now = new Date(); const currentHour = now.getHours(); const currentDay = now.getDate();
+                const todayStr = now.toLocaleDateString('es-ES'); const monthKey = `${now.getFullYear()}-${now.getMonth() + 1}`;
 
                 if (currentHour >= 9) {
                     const lastNotifiedDate = localStorage.getItem('telegram_daily_sent_date');
@@ -273,9 +262,7 @@
 
                         if (pendingClientsToday.length > 0) {
                             let msg = `🕘 *¡AVISO DE COBROS PARA HOY!*\n📅 Fecha: ${todayStr}\n\n`;
-                            pendingClientsToday.forEach(client => {
-                                msg += `👉 👤 *${client.name}* | 💰 Monto: ${client.currency || '$'}${client.monthlyFee}\n`;
-                            });
+                            pendingClientsToday.forEach(client => { msg += `👉 👤 *${client.name}* | 💰 Monto: ${client.currency || '$'}${client.monthlyFee}\n`; });
                             enviarNotificacionTelegram(msg);
                         } else {
                             const msgLibre = `🎉 *¡Día libre de cobros!*\n📅 Fecha: ${todayStr}\nNo tienes clientes programados para facturar el día de hoy.`;
@@ -285,10 +272,8 @@
                     }
                 }
             };
-
             checkAndSendDailyNotifications();
             const intervalId = setInterval(checkAndSendDailyNotifications, 60000); 
-
             return () => clearInterval(intervalId);
           }, [clients, payments, user]);
 
@@ -312,14 +297,186 @@
             }
           }, [agencyName, agencyLogo]);
 
-          const getClientExtras = (clientId) => {
-              return extras.filter(e => e.clientId === clientId && e.monthYear === monthYearKey);
+          // --- FUNCIONES NÓMINA ---
+          const saveEmployee = async (e) => {
+            e.preventDefault();
+            if (!user || !newEmployee.name) return;
+            try {
+              const empData = {
+                name: newEmployee.name, cedula: newEmployee.cedula, email: newEmployee.email, 
+                phone: newEmployee.phone, paymentMethods: newEmployee.paymentMethods, baseSalary: Number(newEmployee.baseSalary)
+              };
+              if (newEmployee.id) {
+                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', newEmployee.id), { ...empData, updatedAt: new Date().toISOString() }, { merge: true });
+                setToastMessage('Empleado actualizado');
+              } else {
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'employees'), { ...empData, createdAt: new Date().toISOString() });
+                setToastMessage('Empleado registrado');
+              }
+              setTimeout(() => setToastMessage(''), 3000);
+              setIsEmployeeModalOpen(false);
+              setNewEmployee({ id: '', name: '', cedula: '', email: '', phone: '', paymentMethods: '', baseSalary: '' });
+            } catch (e) { console.error(e); }
           };
 
-          const getClientExtrasTotal = (clientId) => {
-              return getClientExtras(clientId).reduce((sum, e) => sum + Number(e.amount), 0);
+          const deleteEmployee = async (empId) => {
+            if (!user || !window.confirm('¿Seguro que deseas eliminar este empleado?')) return;
+            try {
+              await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', empId));
+              setToastMessage('Empleado eliminado'); setTimeout(() => setToastMessage(''), 3000);
+            } catch (e) { console.error(e); }
           };
 
+          const openPayrollModal = (emp) => {
+            setSelectedEmployee(emp);
+            const quincenaAmount = (Number(emp.baseSalary) / 2).toString();
+            setPayrollForm({
+                paymentMode: 'quincena',
+                basePaymentUSD: quincenaAmount,
+                rateBCV: rates.usd || '', 
+                description: 'Sueldo Regular', 
+                extraUSD: '',
+                extraDescription: '',
+                periodType: new Date().getDate() <= 15 ? '1ra Quincena' : '2da Quincena', 
+                month: new Date().getMonth(), 
+                year: new Date().getFullYear()
+            });
+            setIsPayrollModalOpen(true);
+          };
+
+          const handlePaymentModeChange = (mode) => {
+              let amount = '';
+              if (mode === 'quincena') amount = (Number(selectedEmployee.baseSalary) / 2).toString();
+              else if (mode === 'mes') amount = selectedEmployee.baseSalary.toString();
+              else amount = payrollForm.basePaymentUSD;
+
+              setPayrollForm(prev => ({
+                  ...prev,
+                  paymentMode: mode,
+                  basePaymentUSD: amount
+              }));
+          };
+
+          const registerPayrollPayment = async (e) => {
+            e.preventDefault();
+            if (!user || !selectedEmployee) return;
+            
+            const baseUSD = Number(payrollForm.basePaymentUSD) || 0;
+            const extraUSD = Number(payrollForm.extraUSD) || 0;
+            const totalUSD = baseUSD + extraUSD;
+            const rateBCV = Number(payrollForm.rateBCV) || 0;
+            const totalBs = totalUSD * rateBCV;
+
+            const periodStr = `Correspondiente a la ${payrollForm.periodType} de ${mesesNombres[payrollForm.month]} ${payrollForm.year}`;
+
+            try {
+                const newPayment = {
+                    employeeId: selectedEmployee.id, employeeName: selectedEmployee.name, employeeCedula: selectedEmployee.cedula,
+                    basePaymentUSD: baseUSD, extraUSD: extraUSD, extraDescription: payrollForm.extraDescription,
+                    amountUSD: totalUSD, rateBCV: rateBCV, totalBs: totalBs,
+                    description: payrollForm.description, periodStr: periodStr,
+                    createdAt: new Date().toISOString(), timestamp: Date.now()
+                };
+
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'payroll_payments'), newPayment);
+                
+                const msg = `💼 *¡PAGO DE NÓMINA REGISTRADO!*\n👤 Empleado: ${selectedEmployee.name}\n💵 Monto Base: $${baseUSD}\n✨ Extras: $${extraUSD}\n💰 *Total: $${totalUSD}* (Bs. ${totalBs.toLocaleString('es-VE', {minimumFractionDigits:2})})\n📅 ${periodStr}`;
+                enviarNotificacionTelegram(msg);
+
+                setToastMessage('Pago de nómina guardado'); setTimeout(() => setToastMessage(''), 3000);
+                setIsPayrollModalOpen(false);
+                generarReciboNomina(newPayment, selectedEmployee);
+            } catch (e) { console.error(e); }
+          };
+
+          const generarReciboNomina = (payRecord, employee) => {
+            const dateStr = new Date(payRecord.createdAt).toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' });
+            
+            let rowsHtml = `<tr><td class="row-description">${payRecord.description.toUpperCase()}</td><td class="text-center">1</td><td class="text-right">$${payRecord.basePaymentUSD.toLocaleString('es-VE', {minimumFractionDigits: 2})}</td><td class="text-right">Bs. ${(payRecord.basePaymentUSD * payRecord.rateBCV).toLocaleString('es-VE', {minimumFractionDigits: 2})}</td></tr>`;
+            if (payRecord.extraUSD > 0) {
+                rowsHtml += `<tr><td class="row-description">BONO / EXTRA: ${payRecord.extraDescription.toUpperCase()}</td><td class="text-center">1</td><td class="text-right">$${payRecord.extraUSD.toLocaleString('es-VE', {minimumFractionDigits: 2})}</td><td class="text-right">Bs. ${(payRecord.extraUSD * payRecord.rateBCV).toLocaleString('es-VE', {minimumFractionDigits: 2})}</td></tr>`;
+            }
+
+            const htmlContent = `
+              <!DOCTYPE html>
+              <html>
+                <head>
+                  <title>Recibo de Nómina - ${employee.name}</title>
+                  <style>
+                    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;700;900&display=swap');
+                    body { font-family: 'Montserrat', sans-serif; padding: 50px; color: #000; max-width: 800px; margin: 0 auto; background: #fff; line-height: 1.5; }
+                    .header-container { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 30px; border-bottom: 2px solid #000; padding-bottom: 20px; }
+                    .main-title { font-size: 24px; font-weight: 900; letter-spacing: 1px; color: #000; margin-bottom: 10px; }
+                    .info-block { font-size: 12px; font-weight: 600; margin-bottom: 5px; }
+                    .emp-section { background: #f8fafc; padding: 15px; border-radius: 12px; margin-bottom: 30px; border: 1px solid #e2e8f0; }
+                    .table-container { margin-top: 20px; margin-bottom: 30px; }
+                    table { width: 100%; border-collapse: collapse; }
+                    th { text-align: left; font-size: 11px; font-weight: 900; border-top: 2px solid #000; border-bottom: 2px solid #000; padding: 12px 5px; text-transform: uppercase; }
+                    td { padding: 15px 5px; font-size: 13px; font-weight: 500; vertical-align: top; border-bottom: 1px solid #eee; }
+                    .text-right { text-align: right; }
+                    .totals-container { width: 50%; float: right; margin-top: 20px; }
+                    .total-row { display: flex; justify-content: space-between; padding: 8px 0; font-size: 14px; font-weight: 600; }
+                    .total-row.final { border-top: 2px solid #000; font-size: 18px; font-weight: 900; padding-top: 15px; margin-top: 5px; color: #0f172a; }
+                    .signatures { clear: both; padding-top: 60px; display: flex; justify-content: center; }
+                    .sig-line { width: 60%; border-top: 2px solid #000; text-align: center; padding-top: 10px; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+                    .btn-container { display: flex; flex-direction: column; gap: 10px; margin-top: 60px; }
+                    .btn { flex: 1; background: #000; color: white; padding: 15px; border: none; font-weight: 700; text-transform: uppercase; cursor: pointer; text-decoration: none; text-align: center; border-radius: 8px; }
+                    .btn-mail { background: #3f979b; }
+                    @media print { .btn-container { display: none; } body { padding: 0; margin: 20px; } }
+                  </style>
+                </head>
+                <body>
+                  <div class="header-container">
+                    <div><div class="main-title">${agencyName.toUpperCase()}</div><div class="info-block">${agencyPhone} | ${agencyEmail}</div></div>
+                    <div style="text-align: right;"><div class="main-title" style="font-size: 20px;">RECIBO DE NÓMINA</div><div class="info-block">FECHA: ${dateStr.toUpperCase()}</div></div>
+                  </div>
+                  <div class="emp-section">
+                    <div class="info-block" style="font-weight: 900; font-size: 14px; margin-bottom: 10px;">DATOS DEL EMPLEADO</div>
+                    <div style="display:flex; justify-content: space-between;">
+                        <div>
+                            <div class="info-block">NOMBRE: <span style="font-weight:400">${employee.name.toUpperCase()}</span></div>
+                            <div class="info-block">CÉDULA: <span style="font-weight:400">${employee.cedula}</span></div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div class="info-block">TELÉFONO: <span style="font-weight:400">${employee.phone || 'N/A'}</span></div>
+                        </div>
+                    </div>
+                  </div>
+                  <div class="info-block" style="font-size: 11px; text-transform: uppercase; color: #475569; letter-spacing: 1px;">
+                    ▶ ${payRecord.periodStr.toUpperCase()}
+                  </div>
+                  <div class="table-container">
+                    <table>
+                      <thead><tr><th>DESCRIPCIÓN DEL PAGO</th><th class="text-center">CANTIDAD</th><th class="text-right">MONTO (USD)</th><th class="text-right">SUBTOTAL (Bs)</th></tr></thead>
+                      <tbody>${rowsHtml}</tbody>
+                    </table>
+                  </div>
+                  <div class="totals-container">
+                    <div class="total-row final"><span>TOTAL PAGADO:</span> <span>Bs. ${payRecord.totalBs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
+                  </div>
+                  <div class="signatures">
+                    <div class="sig-line">RECIBÍ CONFORME (FIRMA DIGITAL)<br><span style="font-size: 10px; font-weight: 400; color: #64748b;">${employee.name} - V-${employee.cedula}</span></div>
+                  </div>
+                  <div class="btn-container">
+                    <div style="display: flex; gap: 10px;">
+                        <a href="javascript:window.print()" class="btn">1. Imprimir / Guardar PDF</a>
+                        <a href="mailto:${employee.email}?subject=${encodeURIComponent(`Recibo de Pago de Nómina - ${payRecord.periodStr}`)}&body=${encodeURIComponent(`Hola ${employee.name},\n\nAdjunto en este correo tu recibo de pago ${payRecord.periodStr}.\n\nPor favor, revísalo, aplícale tu firma digital y responde a este correo con el documento firmado para nuestros registros.\n\nSaludos cordiales,\nEquipo de ${agencyName}`)}" class="btn btn-mail">2. Enviar a Empleado</a>
+                    </div>
+                    <button onclick="window.close(); history.back();" class="btn" style="background: #475569;">🔙 Volver a la App</button>
+                  </div>
+                  <p style="text-align:center; font-size:10px; color:#64748b; margin-top:20px; font-family:sans-serif;">
+                    * Instrucciones: Primero haz clic en "Guardar PDF" para descargar este documento. Luego, haz clic en "Enviar a Empleado" para abrir tu correo, adjunta el PDF que acabas de guardar, y envíalo.
+                  </p>
+                </body>
+              </html>
+            `;
+            const newWindow = window.open('', '_blank');
+            if (newWindow) { newWindow.document.write(htmlContent); newWindow.document.close(); } else { alert("Por favor, permite las ventanas emergentes."); }
+          };
+
+          // --- Funciones Clientes/Recibos Normales ---
+          const getClientExtras = (clientId) => { return extras.filter(e => e.clientId === clientId && e.monthYear === monthYearKey); };
+          const getClientExtrasTotal = (clientId) => { return getClientExtras(clientId).reduce((sum, e) => sum + Number(e.amount), 0); };
           const getPaidAmount = (clientId) => payments[`${clientId}_${monthYearKey}`] || 0;
           
           const getClientStatus = (client) => {
@@ -338,18 +495,9 @@
                 const extrasTotal = getClientExtrasTotal(c.id);
                 const fee = (c.monthlyFee || 0) + extrasTotal; 
                 const paid = getPaidAmount(c.id);
-                if (c.currency === '€') { 
-                    totalEUR += fee; 
-                    collectedEUR += paid; 
-                } else { 
-                    totalUSD += fee; 
-                    collectedUSD += paid; 
-                }
+                if (c.currency === '€') { totalEUR += fee; collectedEUR += paid; } else { totalUSD += fee; collectedUSD += paid; }
             });
-            return { 
-                totalUSD, collectedUSD, pendingUSD: totalUSD - collectedUSD, 
-                totalEUR, collectedEUR, pendingEUR: totalEUR - collectedEUR 
-            };
+            return { totalUSD, collectedUSD, pendingUSD: totalUSD - collectedUSD, totalEUR, collectedEUR, pendingEUR: totalEUR - collectedEUR };
           }, [clients, payments, extras, monthYearKey]);
 
           const handleImageUpload = (e, callback) => {
@@ -375,10 +523,7 @@
           };
 
           const openEditModal = (client) => {
-            setNewClient({
-              id: client.id, name: client.name, service: client.service, monthlyFee: client.monthlyFee,
-              billingDay: client.billingDay, clientLogo: client.clientLogo || null, currency: client.currency || '$'
-            });
+            setNewClient({ id: client.id, name: client.name, service: client.service, monthlyFee: client.monthlyFee, billingDay: client.billingDay, clientLogo: client.clientLogo || null, currency: client.currency || '$' });
             setIsModalOpen(true);
           };
 
@@ -386,78 +531,42 @@
             e.preventDefault();
             if (!user || !newClient.name) return;
             try {
-              const clientData = {
-                name: newClient.name, service: newClient.service, monthlyFee: Number(newClient.monthlyFee),
-                billingDay: Number(newClient.billingDay), clientLogo: newClient.clientLogo || null, currency: newClient.currency || '$'
-              };
-
-              if (newClient.id) {
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', newClient.id), { ...clientData, updatedAt: new Date().toISOString() }, { merge: true });
-              } else {
-                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'clients'), { ...clientData, createdAt: new Date().toISOString() });
-              }
-              
-              setIsModalOpen(false);
-              setNewClient({ name: '', service: '', monthlyFee: '', billingDay: '', phone: '', clientLogo: null, currency: '$' });
-              if (activeTab === 'list' || activeTab === 'clients') {
-                setTimeout(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }), 300);
-              }
+              const clientData = { name: newClient.name, service: newClient.service, monthlyFee: Number(newClient.monthlyFee), billingDay: Number(newClient.billingDay), clientLogo: newClient.clientLogo || null, currency: newClient.currency || '$' };
+              if (newClient.id) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', newClient.id), { ...clientData, updatedAt: new Date().toISOString() }, { merge: true }); } 
+              else { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'clients'), { ...clientData, createdAt: new Date().toISOString() }); }
+              setIsModalOpen(false); setNewClient({ name: '', service: '', monthlyFee: '', billingDay: '', phone: '', clientLogo: null, currency: '$' });
+              if (activeTab === 'list' || activeTab === 'clients') { setTimeout(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }), 300); }
             } catch (e) { console.error(e); }
           };
 
           const confirmDeleteClient = async () => {
             if (!user || !clientToDelete) return;
-            try {
-              await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', clientToDelete.id));
-              setClientToDelete(null);
-            } catch (e) { console.error(e); }
+            try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', clientToDelete.id)); setClientToDelete(null); } catch (e) { console.error(e); }
           };
 
           const handleFullPayment = async (client) => {
             if (!user) return;
             try {
-              const extrasTotal = getClientExtrasTotal(client.id);
-              const totalAmount = Number(client.monthlyFee) + extrasTotal;
-              const paymentId = `${client.id}_${monthYearKey}`;
-              await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', paymentId), { 
-                clientId: client.id, monthYear: monthYearKey, amount: totalAmount, updatedAt: new Date().toISOString()
-              }, { merge: true });
-
-              const dateStr = new Date().toLocaleDateString('es-ES');
-              const msg = `✅ *¡PAGO REGISTRADO!*\n👤 Cliente: ${client.name}\n💰 Monto: ${client.currency || '$'}${totalAmount}\n📅 Fecha: ${dateStr}`;
-              enviarNotificacionTelegram(msg);
-
+              const extrasTotal = getClientExtrasTotal(client.id); const totalAmount = Number(client.monthlyFee) + extrasTotal; const paymentId = `${client.id}_${monthYearKey}`;
+              await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', paymentId), { clientId: client.id, monthYear: monthYearKey, amount: totalAmount, updatedAt: new Date().toISOString() }, { merge: true });
+              const dateStr = new Date().toLocaleDateString('es-ES'); const msg = `✅ *¡PAGO REGISTRADO!*\n👤 Cliente: ${client.name}\n💰 Monto: ${client.currency || '$'}${totalAmount}\n📅 Fecha: ${dateStr}`; enviarNotificacionTelegram(msg);
             } catch (e) { console.error(e); }
           };
 
           const revertPayment = async (client) => {
             if (!user) return;
-            try {
-              const paymentId = `${client.id}_${monthYearKey}`;
-              await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', paymentId));
-              setToastMessage('Pago revertido a pendiente');
-              setTimeout(() => setToastMessage(''), 3000);
-            } catch (e) { console.error(e); }
+            try { const paymentId = `${client.id}_${monthYearKey}`; await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', paymentId)); setToastMessage('Pago revertido a pendiente'); setTimeout(() => setToastMessage(''), 3000); } 
+            catch (e) { console.error(e); }
           };
 
           const registerAbono = async (e) => {
             e.preventDefault();
             if (!user || !isAbonoModalOpen) return;
             try {
-              const currentPaid = getPaidAmount(isAbonoModalOpen);
-              const totalAbonado = currentPaid + Number(abonoAmount);
-              const paymentId = `${isAbonoModalOpen}_${monthYearKey}`;
-              await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', paymentId), { 
-                clientId: isAbonoModalOpen, monthYear: monthYearKey, amount: totalAbonado, updatedAt: new Date().toISOString()
-              }, { merge: true });
-
-              const clientAbono = clients.find(c => c.id === isAbonoModalOpen);
-              const dateStr = new Date().toLocaleDateString('es-ES');
-              const msg = `💸 *¡ABONO REGISTRADO!*\n👤 Cliente: ${clientAbono?.name}\n💰 Monto: ${clientAbono?.currency || '$'}${abonoAmount}\n📅 Fecha: ${dateStr}`;
-              enviarNotificacionTelegram(msg);
-
-              setIsAbonoModalOpen(null);
-              setAbonoAmount('');
+              const currentPaid = getPaidAmount(isAbonoModalOpen); const totalAbonado = currentPaid + Number(abonoAmount); const paymentId = `${isAbonoModalOpen}_${monthYearKey}`;
+              await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', paymentId), { clientId: isAbonoModalOpen, monthYear: monthYearKey, amount: totalAbonado, updatedAt: new Date().toISOString() }, { merge: true });
+              const clientAbono = clients.find(c => c.id === isAbonoModalOpen); const dateStr = new Date().toLocaleDateString('es-ES'); const msg = `💸 *¡ABONO REGISTRADO!*\n👤 Cliente: ${clientAbono?.name}\n💰 Monto: ${clientAbono?.currency || '$'}${abonoAmount}\n📅 Fecha: ${dateStr}`; enviarNotificacionTelegram(msg);
+              setIsAbonoModalOpen(null); setAbonoAmount('');
             } catch (e) { console.error(e); }
           };
 
@@ -465,20 +574,14 @@
             e.preventDefault();
             if (!user || !isExtraModalOpen || !extraForm.description || !extraForm.amount) return;
             try {
-              await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'extras'), {
-                  clientId: isExtraModalOpen, monthYear: monthYearKey, description: extraForm.description, amount: Number(extraForm.amount), createdAt: new Date().toISOString()
-              });
-              setExtraForm({ description: '', amount: '' });
-              setToastMessage('Cobro extra agregado'); setTimeout(() => setToastMessage(''), 3000);
+              await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'extras'), { clientId: isExtraModalOpen, monthYear: monthYearKey, description: extraForm.description, amount: Number(extraForm.amount), createdAt: new Date().toISOString() });
+              setExtraForm({ description: '', amount: '' }); setToastMessage('Cobro extra agregado'); setTimeout(() => setToastMessage(''), 3000);
             } catch (e) { console.error(e); }
           };
 
           const deleteExtra = async (extraId) => {
             if (!user) return;
-            try {
-                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'extras', extraId));
-                setToastMessage('Extra eliminado'); setTimeout(() => setToastMessage(''), 3000);
-            } catch (e) { console.error(e); }
+            try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'extras', extraId)); setToastMessage('Extra eliminado'); setTimeout(() => setToastMessage(''), 3000); } catch (e) { console.error(e); }
           };
 
           const addToCalendar = (client) => {
@@ -495,22 +598,10 @@
           };
 
           const openReceipt = (client, type = 'cobro') => {
-            const paid = getPaidAmount(client.id); 
-            const extrasTotal = getClientExtrasTotal(client.id);
-            const totalAmount = client.monthlyFee + extrasTotal;
-            const remaining = totalAmount - paid; 
-            const displayAmount = type === 'cobro' ? remaining : paid;
-            const currency = client.currency || '$'; 
-            const months = ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
-            const currentMonthName = months[selectedDate.getMonth()]; 
-            const dateStr = `${client.billingDay || 1} DE ${currentMonthName} ${selectedDate.getFullYear()}`;
-            
-            let rowsHtml = `<tr><td class="row-description">MENSUALIDAD DE<br>${currentMonthName}</td><td class="text-center">1</td><td class="text-right">${currency}${client.monthlyFee}</td><td class="text-right">${currency}${client.monthlyFee}</td></tr>`;
-            
+            const paid = getPaidAmount(client.id); const extrasTotal = getClientExtrasTotal(client.id); const totalAmount = client.monthlyFee + extrasTotal; const remaining = totalAmount - paid; const displayAmount = type === 'cobro' ? remaining : paid; const currency = client.currency || '$'; const currentMonthName = mesesNombres[selectedDate.getMonth()]; const dateStr = `${client.billingDay || 1} DE ${currentMonthName.toUpperCase()} ${selectedDate.getFullYear()}`;
+            let rowsHtml = `<tr><td class="row-description">MENSUALIDAD DE<br>${currentMonthName.toUpperCase()}</td><td class="text-center">1</td><td class="text-right">${currency}${client.monthlyFee}</td><td class="text-right">${currency}${client.monthlyFee}</td></tr>`;
             const clientExtrasList = getClientExtras(client.id);
-            clientExtrasList.forEach(ex => {
-                rowsHtml += `<tr><td class="row-description">EXTRA: ${ex.description.toUpperCase()}</td><td class="text-center">1</td><td class="text-right">${currency}${ex.amount}</td><td class="text-right">${currency}${ex.amount}</td></tr>`;
-            });
+            clientExtrasList.forEach(ex => { rowsHtml += `<tr><td class="row-description">EXTRA: ${ex.description.toUpperCase()}</td><td class="text-center">1</td><td class="text-right">${currency}${ex.amount}</td><td class="text-right">${currency}${ex.amount}</td></tr>`; });
 
             const htmlContent = `
               <!DOCTYPE html>
@@ -538,7 +629,7 @@
                     .footer-contact { font-size: 12px; font-weight: 500; line-height: 1.6; margin-bottom: 40px; }
                     .footer-contact strong { font-weight: 800; }
                     .disclaimer { font-size: 10px; font-weight: 700; color: #000; max-width: 500px; text-transform: uppercase; letter-spacing: 0.5px; }
-                    .btn-print { display: block; width: 100%; background: #000; color: white; padding: 15px; border: none; font-weight: 700; text-transform: uppercase; margin-top: 40px; cursor: pointer; text-decoration: none; text-align: center; }
+                    .btn-print { display: block; width: 100%; background: #000; color: white; padding: 15px; border: none; font-weight: 700; text-transform: uppercase; margin-top: 10px; cursor: pointer; text-decoration: none; text-align: center; border-radius: 8px;}
                     @media print { .btn-print { display: none; } body { padding: 0; margin: 20px; } }
                   </style>
                 </head>
@@ -549,12 +640,15 @@
                   <div class="total-section"><div class="total-label">Total</div><div class="total-amount">${currency} ${displayAmount}</div><div class="bcv-text">O AL CAMBIO EN BCV</div></div>
                   <div class="footer-contact">Atentamente,<br><strong>${agencyName}</strong><br>${agencyPhone}<br><br>${agencyEmail}</div>
                   <div class="disclaimer">SI YA REALIZO SU PAGO POR FAVOR HACER CASO OMISO DE ESTE MENSAJE</div>
-                  <a href="javascript:window.print()" class="btn-print">Imprimir / Guardar PDF</a>
+                  <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 40px;">
+                      <a href="javascript:window.print()" class="btn-print">Imprimir / Guardar PDF</a>
+                      <button onclick="window.close(); history.back();" class="btn-print" style="background: #475569;">🔙 Volver a la App</button>
+                  </div>
                 </body>
               </html>
             `;
             const newWindow = window.open('', '_blank');
-            if (newWindow) { newWindow.document.write(htmlContent); newWindow.document.close(); } else { alert("Por favor, permite las ventanas emergentes para ver el recibo."); }
+            if (newWindow) { newWindow.document.write(htmlContent); newWindow.document.close(); } else { alert("Por favor, permite las ventanas emergentes."); }
           };
 
           const handleInvoiceClientChange = (e) => {
@@ -567,25 +661,15 @@
             const clientToInvoice = clients.find(c => c.id === invoiceClientId);
             if (!clientToInvoice || !tasaBCV) return;
 
-            const rate = Number(tasaBCV); 
-            const extrasTotal = getClientExtrasTotal(clientToInvoice.id);
-            const feeOriginal = Number(clientToInvoice.monthlyFee) + extrasTotal;
-            
+            const rate = Number(tasaBCV); const extrasTotal = getClientExtrasTotal(clientToInvoice.id); const feeOriginal = Number(clientToInvoice.monthlyFee) + extrasTotal;
             let baseImponible, iva, totalBs;
-            if (facturaIncludesIva) { totalBs = feeOriginal * rate; baseImponible = totalBs / 1.16; iva = totalBs - baseImponible; } 
-            else { baseImponible = feeOriginal * rate; iva = baseImponible * 0.16; totalBs = baseImponible + iva; }
-
-            const currency = clientToInvoice.currency || '$';
-            const dateStr = selectedDate.toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' });
+            if (facturaIncludesIva) { totalBs = feeOriginal * rate; baseImponible = totalBs / 1.16; iva = totalBs - baseImponible; } else { baseImponible = feeOriginal * rate; iva = baseImponible * 0.16; totalBs = baseImponible + iva; }
+            const currency = clientToInvoice.currency || '$'; const dateStr = selectedDate.toLocaleDateString('es-ES', { day: '2-digit', month: 'long', year: 'numeric' });
             
             const principalBs = clientToInvoice.monthlyFee * rate;
             let rowsHtml = `<tr><td class="row-description">Honorarios Profesionales por ${clientToInvoice.service} (Mes en curso)</td><td class="text-center">1</td><td class="text-right">${principalBs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td><td class="text-right">${principalBs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td></tr>`;
-            
             const clientExtrasList = getClientExtras(clientToInvoice.id);
-            clientExtrasList.forEach(ex => {
-                const extraBs = ex.amount * rate;
-                rowsHtml += `<tr><td class="row-description">EXTRA: ${ex.description}</td><td class="text-center">1</td><td class="text-right">${extraBs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td><td class="text-right">${extraBs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td></tr>`;
-            });
+            clientExtrasList.forEach(ex => { const extraBs = ex.amount * rate; rowsHtml += `<tr><td class="row-description">EXTRA: ${ex.description}</td><td class="text-center">1</td><td class="text-right">${extraBs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td><td class="text-right">${extraBs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td></tr>`; });
 
             const htmlContent = `
               <!DOCTYPE html>
@@ -609,130 +693,68 @@
                     .total-row { display: flex; justify-content: space-between; padding: 8px 0; font-size: 14px; font-weight: 600; }
                     .total-row.final { border-top: 2px solid #000; font-size: 18px; font-weight: 900; padding-top: 15px; margin-top: 5px; }
                     .tasa-info { clear: both; padding-top: 40px; font-size: 11px; font-weight: 600; color: #555; }
-                    .btn-print { display: block; width: 100%; background: #000; color: white; padding: 15px; border: none; font-weight: 700; text-transform: uppercase; margin-top: 60px; cursor: pointer; text-decoration: none; text-align: center; }
+                    .btn-print { display: block; width: 100%; background: #000; color: white; padding: 15px; border: none; font-weight: 700; text-transform: uppercase; margin-top: 10px; cursor: pointer; text-decoration: none; text-align: center; border-radius: 8px;}
                     @media print { .btn-print { display: none; } body { padding: 0; margin: 20px; } }
                   </style>
                 </head>
                 <body>
-                  <div class="header-container">
-                    <div>
-                      <div class="main-title">${agencyName.toUpperCase()}</div>
-                      <div class="info-block">${agencyPhone} | ${agencyEmail}</div>
-                    </div>
-                    <div style="text-align: right;">
-                      <div class="main-title" style="font-size: 24px;">FACTURA</div>
-                      <div class="info-block">FECHA: ${dateStr.toUpperCase()}</div>
-                    </div>
-                  </div>
-                  <div style="margin-bottom: 30px;">
-                    <div class="info-block" style="font-weight: 800; font-size: 14px;">CLIENTE: ${clientToInvoice.name.toUpperCase()}</div>
-                    <div class="info-block">SERVICIO: ${clientToInvoice.service.toUpperCase()}</div>
-                  </div>
-                  <div class="table-container">
-                    <table>
-                      <thead><tr><th class="row-description">DESCRIPCIÓN</th><th class="text-center">CANT.</th><th class="text-right">PRECIO UNIT. (Bs)</th><th class="text-right">SUBTOTAL (Bs)</th></tr></thead>
-                      <tbody>${rowsHtml}</tbody>
-                    </table>
-                  </div>
+                  <div class="header-container"><div><div class="main-title">${agencyName.toUpperCase()}</div><div class="info-block">${agencyPhone} | ${agencyEmail}</div></div><div style="text-align: right;"><div class="main-title" style="font-size: 24px;">FACTURA</div><div class="info-block">FECHA: ${dateStr.toUpperCase()}</div></div></div>
+                  <div style="margin-bottom: 30px;"><div class="info-block" style="font-weight: 800; font-size: 14px;">CLIENTE: ${clientToInvoice.name.toUpperCase()}</div><div class="info-block">SERVICIO: ${clientToInvoice.service.toUpperCase()}</div></div>
+                  <div class="table-container"><table><thead><tr><th class="row-description">DESCRIPCIÓN</th><th class="text-center">CANT.</th><th class="text-right">PRECIO UNIT. (Bs)</th><th class="text-right">SUBTOTAL (Bs)</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
                   <div class="totals-container">
                     <div class="total-row"><span>BASE IMPONIBLE:</span> <span>Bs. ${baseImponible.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
                     <div class="total-row"><span>IVA (16%):</span> <span>Bs. ${iva.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
                     <div class="total-row final"><span>TOTAL A PAGAR:</span> <span>Bs. ${totalBs.toLocaleString('es-VE', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span></div>
                   </div>
                   <div class="tasa-info">* Equivalente a ${currency}${feeOriginal.toLocaleString('es-VE', {minimumFractionDigits: 2})} calculado a la Tasa de Cambio BCV de Bs. ${rate.toLocaleString('es-VE', {minimumFractionDigits: 2})} por ${currency === '€' ? 'Euro' : 'Dólar'}.</div>
-                  <a href="javascript:window.print()" class="btn-print">Imprimir / Guardar PDF Fiscal</a>
+                  <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 40px;">
+                      <a href="javascript:window.print()" class="btn-print">Imprimir / Guardar PDF Fiscal</a>
+                      <button onclick="window.close(); history.back();" class="btn-print" style="background: #475569;">🔙 Volver a la App</button>
+                  </div>
                 </body>
               </html>
             `;
             const newWindow = window.open('', '_blank');
-            if (newWindow) { newWindow.document.write(htmlContent); newWindow.document.close(); } else { alert("Por favor, permite las ventanas emergentes para ver la factura."); }
+            if (newWindow) { newWindow.document.write(htmlContent); newWindow.document.close(); } else { alert("Por favor, permite las ventanas emergentes."); }
           };
 
           const exportToCSV = () => {
-            let csvContent = "data:text/csv;charset=utf-8,";
-            csvContent += "ID Cliente,Nombre Cliente,Servicio,Monto Mensual,Moneda,Dia Cobro,ID Pago,Mes Cobrado (Año-Mes),Monto Pagado,Fecha Registro,Agencia Nombre,Agencia Telefono,Agencia Correo\n";
-
-            let isFirstRow = true;
-            const getAgencyData = () => {
-                if (isFirstRow) { isFirstRow = false; return `,"${agencyName || ''}","${agencyPhone || ''}","${agencyEmail || ''}"`; }
-                return `,"","",""`;
-            };
-
+            let csvContent = "data:text/csv;charset=utf-8,"; csvContent += "ID Cliente,Nombre Cliente,Servicio,Monto Mensual,Moneda,Dia Cobro,ID Pago,Mes Cobrado (Año-Mes),Monto Pagado,Fecha Registro,Agencia Nombre,Agencia Telefono,Agencia Correo\n";
+            let isFirstRow = true; const getAgencyData = () => { if (isFirstRow) { isFirstRow = false; return `,"${agencyName || ''}","${agencyPhone || ''}","${agencyEmail || ''}"`; } return `,"","",""`; };
             if (clients.length === 0) csvContent += `,,,,,,,,${getAgencyData()}\n`;
-
             clients.forEach(client => {
                 const clientPayments = allPaymentsRaw.filter(p => p.clientId === client.id);
-                if (clientPayments.length === 0) {
-                    const row = [client.id, `"${client.name || ''}"`, `"${client.service || ''}"`, client.monthlyFee || 0, `"${client.currency || '$'}"`, client.billingDay || 1, "","",0,""].join(",") + getAgencyData();
-                    csvContent += row + "\n";
-                } else {
-                    clientPayments.forEach(payment => {
-                        const row = [client.id, `"${client.name || ''}"`, `"${client.service || ''}"`, client.monthlyFee || 0, `"${client.currency || '$'}"`, client.billingDay || 1, payment.id, payment.monthYear, payment.amount || 0, payment.updatedAt ? new Date(payment.updatedAt).toLocaleDateString() : 'N/A'].join(",") + getAgencyData();
-                        csvContent += row + "\n";
-                    });
-                }
+                if (clientPayments.length === 0) { const row = [client.id, `"${client.name || ''}"`, `"${client.service || ''}"`, client.monthlyFee || 0, `"${client.currency || '$'}"`, client.billingDay || 1, "","",0,""].join(",") + getAgencyData(); csvContent += row + "\n"; } 
+                else { clientPayments.forEach(payment => { const row = [client.id, `"${client.name || ''}"`, `"${client.service || ''}"`, client.monthlyFee || 0, `"${client.currency || '$'}"`, client.billingDay || 1, payment.id, payment.monthYear, payment.amount || 0, payment.updatedAt ? new Date(payment.updatedAt).toLocaleDateString() : 'N/A'].join(",") + getAgencyData(); csvContent += row + "\n"; }); }
             });
-
-            const encodedUri = encodeURI(csvContent);
-            const link = document.createElement("a");
-            link.setAttribute("href", encodedUri);
-            link.setAttribute("download", `Respaldo_Agencia_${new Date().toISOString().slice(0,10)}.csv`);
-            document.body.appendChild(link); link.click(); document.body.removeChild(link);
+            const encodedUri = encodeURI(csvContent); const link = document.createElement("a"); link.setAttribute("href", encodedUri); link.setAttribute("download", `Respaldo_Agencia_${new Date().toISOString().slice(0,10)}.csv`); document.body.appendChild(link); link.click(); document.body.removeChild(link);
           };
 
           const importFromCSV = async (e) => {
-            const file = e.target.files[0];
-            if (!file || !user) return;
-            setIsUploading(true);
-
+            const file = e.target.files[0]; if (!file || !user) return; setIsUploading(true);
             const reader = new FileReader();
             reader.onload = async (event) => {
-                const text = event.target.result;
-                const lines = text.split('\n').filter(line => line.trim() !== '');
+                const text = event.target.result; const lines = text.split('\n').filter(line => line.trim() !== '');
                 if (lines.length < 2) { setToastMessage("El archivo CSV está vacío o no es válido"); setTimeout(() => setToastMessage(''), 3000); setIsUploading(false); return; }
-                
-                const headerLine = lines[0];
-                const isOldFormat = !headerLine.includes("Dia Cobro"); 
-                const hasMoneda = headerLine.includes("Moneda");
-                
-                const dataLines = lines.slice(1);
-                const clientsToRestore = new Map();
-                const paymentsToRestore = [];
-                let importedAgencySettings = null;
-
+                const headerLine = lines[0]; const isOldFormat = !headerLine.includes("Dia Cobro"); const hasMoneda = headerLine.includes("Moneda");
+                const dataLines = lines.slice(1); const clientsToRestore = new Map(); const paymentsToRestore = []; let importedAgencySettings = null;
                 dataLines.forEach(line => {
                     const row = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
                     if (row.length >= 7) {
-                        const clientId = row[0]?.replace(/^"|"$/g, '').trim();
-                        const clientName = row[1]?.replace(/^"|"$/g, '').trim();
-                        const clientService = row[2]?.replace(/^"|"$/g, '').trim();
-                        const monthlyFee = Number(row[3]);
-                        
+                        const clientId = row[0]?.replace(/^"|"$/g, '').trim(); const clientName = row[1]?.replace(/^"|"$/g, '').trim(); const clientService = row[2]?.replace(/^"|"$/g, '').trim(); const monthlyFee = Number(row[3]);
                         let billingDay = 1, paymentId, monthYear, amount, currency = '$';
-
-                        if (isOldFormat) {
-                            paymentId = row[4]?.replace(/^"|"$/g, '').trim(); monthYear = row[5]?.replace(/^"|"$/g, '').trim(); amount = Number(row[6]);
-                        } else if (!hasMoneda) {
+                        if (isOldFormat) { paymentId = row[4]?.replace(/^"|"$/g, '').trim(); monthYear = row[5]?.replace(/^"|"$/g, '').trim(); amount = Number(row[6]); } 
+                        else if (!hasMoneda) {
                             billingDay = Number(row[4]) || 1; paymentId = row[5]?.replace(/^"|"$/g, '').trim(); monthYear = row[6]?.replace(/^"|"$/g, '').trim(); amount = Number(row[7]);
-                            if (!importedAgencySettings && row.length >= 12 && row[9]) {
-                                const parsedAgencyName = row[9].replace(/^"|"$/g, '').trim();
-                                if (parsedAgencyName) { importedAgencySettings = { name: parsedAgencyName, phone: row[10]?.replace(/^"|"$/g, '').trim() || '', email: row[11]?.replace(/^"|"$/g, '').trim() || '' }; }
-                            }
+                            if (!importedAgencySettings && row.length >= 12 && row[9]) { const parsedAgencyName = row[9].replace(/^"|"$/g, '').trim(); if (parsedAgencyName) { importedAgencySettings = { name: parsedAgencyName, phone: row[10]?.replace(/^"|"$/g, '').trim() || '', email: row[11]?.replace(/^"|"$/g, '').trim() || '' }; } }
                         } else {
                             currency = row[4]?.replace(/^"|"$/g, '').trim() || '$'; billingDay = Number(row[5]) || 1; paymentId = row[6]?.replace(/^"|"$/g, '').trim(); monthYear = row[7]?.replace(/^"|"$/g, '').trim(); amount = Number(row[8]);
-                            if (!importedAgencySettings && row.length >= 13 && row[10]) {
-                                const parsedAgencyName = row[10].replace(/^"|"$/g, '').trim();
-                                if (parsedAgencyName) { importedAgencySettings = { name: parsedAgencyName, phone: row[11]?.replace(/^"|"$/g, '').trim() || '', email: row[12]?.replace(/^"|"$/g, '').trim() || '' }; }
-                            }
+                            if (!importedAgencySettings && row.length >= 13 && row[10]) { const parsedAgencyName = row[10].replace(/^"|"$/g, '').trim(); if (parsedAgencyName) { importedAgencySettings = { name: parsedAgencyName, phone: row[11]?.replace(/^"|"$/g, '').trim() || '', email: row[12]?.replace(/^"|"$/g, '').trim() || '' }; } }
                         }
-
-                        if (clientId && clientName) {
-                            clientsToRestore.set(clientId, { name: clientName, service: clientService, monthlyFee: isNaN(monthlyFee) ? 0 : monthlyFee, currency: currency, billingDay: billingDay, createdAt: new Date().toISOString() });
-                        }
+                        if (clientId && clientName) { clientsToRestore.set(clientId, { name: clientName, service: clientService, monthlyFee: isNaN(monthlyFee) ? 0 : monthlyFee, currency: currency, billingDay: billingDay, createdAt: new Date().toISOString() }); }
                         if (paymentId && monthYear) { paymentsToRestore.push({ id: paymentId, clientId: clientId, monthYear: monthYear, amount: isNaN(amount) ? 0 : amount, updatedAt: new Date().toISOString() }); }
                     }
                 });
-
                 try {
                     if (importedAgencySettings) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'agency'), importedAgencySettings, { merge: true }); }
                     for (const [id, data] of clientsToRestore.entries()) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', id), data, { merge: true }); }
@@ -745,20 +767,12 @@
           };
 
           const exportToJSON = () => {
-            const backupData = { settings: { name: agencyName, phone: agencyPhone, email: agencyEmail, logo: agencyLogo, banner: agencyBanner }, clients: clients, payments: allPaymentsRaw, extras: extras };
-            const jsonStr = JSON.stringify(backupData, null, 2);
-            const blob = new Blob([jsonStr], { type: "application/json" });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.href = url; link.download = `Respaldo_Completo_App_${new Date().toISOString().slice(0,10)}.json`;
-            document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
+            const backupData = { settings: { name: agencyName, phone: agencyPhone, email: agencyEmail, logo: agencyLogo, banner: agencyBanner }, clients: clients, payments: allPaymentsRaw, extras: extras, employees: employees, payroll: payrollHistory };
+            const jsonStr = JSON.stringify(backupData, null, 2); const blob = new Blob([jsonStr], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `Respaldo_Completo_App_${new Date().toISOString().slice(0,10)}.json`; document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
           };
 
           const importFromJSON = async (e) => {
-            const file = e.target.files[0];
-            if (!file || !user) return;
-            setIsUploading(true);
-            const reader = new FileReader();
+            const file = e.target.files[0]; if (!file || !user) return; setIsUploading(true); const reader = new FileReader();
             reader.onload = async (event) => {
                 try {
                     const parsedData = JSON.parse(event.target.result);
@@ -766,6 +780,8 @@
                     if (parsedData.clients && Array.isArray(parsedData.clients)) { for (const client of parsedData.clients) { if (client.id) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'clients', client.id), client, { merge: true }); } } }
                     if (parsedData.payments && Array.isArray(parsedData.payments)) { for (const payment of parsedData.payments) { if (payment.id) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payments', payment.id), payment, { merge: true }); } } }
                     if (parsedData.extras && Array.isArray(parsedData.extras)) { for (const extra of parsedData.extras) { if (extra.id) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'extras', extra.id), extra, { merge: true }); } } }
+                    if (parsedData.employees && Array.isArray(parsedData.employees)) { for (const emp of parsedData.employees) { if (emp.id) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', emp.id), emp, { merge: true }); } } }
+                    if (parsedData.payroll && Array.isArray(parsedData.payroll)) { for (const pay of parsedData.payroll) { if (pay.id) { await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'payroll_payments', pay.id), pay, { merge: true }); } } }
                     setToastMessage('¡Clonación de datos completada (JSON)!');
                 } catch (error) { console.error("Error importando JSON:", error); setToastMessage('Error al leer el archivo JSON.'); } 
                 finally { setTimeout(() => setToastMessage(''), 3000); if (importJsonFileInputRef.current) importJsonFileInputRef.current.value = ''; setIsUploading(false); }
@@ -785,7 +801,6 @@
             return result;
           }, [clients, payments, extras, searchTerm, filterStatus, monthYearKey, sortBy]);
 
-          // --- Lógica de Notificaciones (RESTAURADA) ---
           const notifications = useMemo(() => {
             const today = new Date(); const currentDay = today.getDate(); const realTimeMonthKey = `${today.getFullYear()}-${today.getMonth() + 1}`;
             return clients.filter(c => {
@@ -795,7 +810,6 @@
             });
           }, [clients, payments]);
 
-          // --- Variables de Calendario y Fechas (ASEGURADAS) ---
           const monthName = selectedDate.toLocaleString('es-ES', { month: 'long', year: 'numeric' });
           const currentYear = selectedDate.getFullYear();
           const currentMonth = selectedDate.getMonth();
@@ -864,7 +878,8 @@
               {toastMessage && (<div className="fixed top-4 left-1/2 -translate-x-1/2 z-[200] bg-[#3f979b] text-white px-4 py-2 rounded-xl font-bold text-xs shadow-xl flex items-center gap-2 animate-in slide-in-from-top-4"><CheckCircle2 size={16} />{toastMessage}</div>)}
 
               <div className="max-w-2xl mx-auto">
-                {(activeTab !== 'clients' && activeTab !== 'invoice') && (
+                {/* HEADERS COMUNES */}
+                {(activeTab !== 'clients' && activeTab !== 'invoice' && activeTab !== 'payroll') && (
                   <div className="animate-in fade-in duration-300">
                     <div className="flex flex-col gap-4 mb-6">
                         <div className="flex justify-between items-center bg-slate-900/50 p-3 rounded-2xl border border-slate-800">
@@ -881,7 +896,7 @@
                             </div>
 
                             <div className="px-5 pb-5 relative flex flex-col sm:flex-row sm:items-end gap-4 -mt-10">
-                                <div className="w-20 h-20 bg-slate-900 rounded-full border-4 border-[#0f172a] flex items-center justify-center relative group overflow-hidden shadow-2xl cursor-pointer hover:border-[#8bf5fa]/50 transition-colors z-10 shrink-0 mx-auto sm:mx-0" onClick={() => agencyFileInputRef.current.click()}>
+                                <div className="w-20 h-20 bg-slate-900 rounded-full border-4 border-[#0f172a] flex items-center justify-center relative overflow-hidden shadow-2xl z-10 shrink-0 mx-auto sm:mx-0 cursor-pointer hover:border-[#8bf5fa]/50 transition-colors" onClick={() => agencyFileInputRef.current.click()}>
                                     {agencyLogo ? <img src={agencyLogo} className="w-full h-full object-cover" alt="Logo" /> : <Camera className="text-slate-600 group-hover:text-[#8bf5fa] transition-colors" size={24} />}
                                     <input type="file" ref={agencyFileInputRef} className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, (res) => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'agency'), { logo: res }, { merge: true }))} />
                                 </div>
@@ -896,12 +911,15 @@
                                             <MoreVertical size={20} className="text-slate-400 hover:text-white transition-colors" />
                                             {notifications.length > 0 && <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-slate-800 animate-pulse"></span>}
                                         </button>
+
                                         {isHeaderMenuOpen && (
                                             <>
                                                 <div className="fixed inset-0 z-40" onClick={() => setIsHeaderMenuOpen(false)}></div>
                                                 <div className="absolute top-full right-0 mt-2 w-48 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl z-50 overflow-hidden animate-in fade-in slide-in-from-top-2">
                                                     <div className="p-2 space-y-1">
-                                                        <button onClick={() => { setIsSettingsModalOpen(true); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800 rounded-lg transition-colors"><Settings size={16} className="text-[#8bf5fa]" /> Configuración</button>
+                                                        <button onClick={() => { setActiveTab('payroll'); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-white hover:bg-[#8bf5fa]/10 rounded-lg transition-colors"><Briefcase size={16} className="text-[#8bf5fa]" /> Módulo Nómina</button>
+                                                        <div className="h-px bg-slate-800 my-1"></div>
+                                                        <button onClick={() => { setIsSettingsModalOpen(true); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800 rounded-lg transition-colors"><Settings size={16} className="text-slate-400" /> Configuración</button>
                                                         <button onClick={() => { setIsNotifOpen(true); setIsHeaderMenuOpen(false); }} className="w-full flex items-center gap-3 px-3 py-2 text-sm font-bold text-white hover:bg-slate-800 rounded-lg transition-colors"><Bell size={16} className={notifications.length > 0 ? "text-red-400" : "text-slate-400"} /> Notificaciones{notifications.length > 0 && <span className="ml-auto bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded-full">{notifications.length}</span>}</button>
                                                         <div className="h-px bg-slate-800 my-1"></div>
                                                         <p className="text-[9px] font-black text-slate-500 uppercase px-3 py-1">Respaldos CSV</p>
@@ -943,6 +961,53 @@
                         <h3 className="text-[#3f979b] text-3xl font-black tracking-tighter">{clients.length}</h3>
                       </div>
                     </div>
+                  </div>
+                )}
+
+                {/* VISTA: NÓMINA (PAYROLL) */}
+                {activeTab === 'payroll' && (
+                  <div className="animate-in fade-in duration-300">
+                     <div className="bg-slate-900/50 p-5 rounded-3xl border border-slate-800/60 mb-6 shadow-xl">
+                         <div className="flex items-center justify-between mb-6">
+                             <div className="flex items-center gap-3"><div className="p-2 bg-[#8bf5fa]/20 rounded-xl"><Briefcase size={20} className="text-[#8bf5fa]" /></div><h2 className="text-lg font-black text-white uppercase tracking-wide">Módulo de Nómina</h2></div>
+                             <button onClick={() => { setNewEmployee({id:'', name:'', cedula:'', email:'', phone:'', paymentMethods:'', baseSalary:''}); setIsEmployeeModalOpen(true); }} className="flex items-center gap-2 bg-[#8bf5fa] text-slate-900 px-3 py-1.5 rounded-lg text-xs font-black uppercase hover:bg-cyan-300 transition-colors"><UserPlus size={14} /> Nuevo Empleado</button>
+                         </div>
+
+                         <div className="bg-slate-800/40 border border-slate-700 p-4 rounded-2xl mb-6">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Nómina Pagada (Este Mes)</p>
+                            <h3 className="text-3xl font-black text-white">$ {payrollHistory.filter(p => new Date(p.createdAt).getMonth() === new Date().getMonth() && new Date(p.createdAt).getFullYear() === new Date().getFullYear()).reduce((sum, p) => sum + p.amountUSD, 0).toLocaleString('es-VE', {minimumFractionDigits:2})}</h3>
+                         </div>
+
+                         <div className="space-y-6">
+                             <div>
+                                 <h3 className="text-xs font-black text-[#8bf5fa] uppercase tracking-widest mb-3 border-b border-slate-800 pb-2">Directorio de Empleados</h3>
+                                 <div className="space-y-3">
+                                     {employees.length === 0 ? (
+                                         <p className="text-xs text-slate-500 italic text-center py-4">No hay empleados registrados.</p>
+                                     ) : (
+                                         employees.map(emp => (
+                                             <div key={emp.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex flex-col justify-between items-start gap-4 hover:border-[#8bf5fa]/30 transition-colors">
+                                                 <div className="flex items-center gap-3">
+                                                     <div className="w-10 h-10 bg-slate-800 rounded-full flex items-center justify-center font-black text-slate-400 border border-slate-700">{emp.name.charAt(0)}</div>
+                                                     <div>
+                                                         <h4 className="text-sm font-black text-white">{emp.name}</h4>
+                                                         <p className="text-[10px] font-bold text-slate-500">C.I: {emp.cedula} | {emp.phone}</p>
+                                                         <p className="text-[10px] font-bold text-[#f9f54b] mt-0.5">Sueldo Base: ${emp.baseSalary}</p>
+                                                     </div>
+                                                 </div>
+                                                 <div className="flex gap-2 w-full pt-2 border-t border-slate-800/50">
+                                                     <button onClick={() => openPayrollModal(emp)} className="flex-1 bg-[#3f979b] hover:bg-[#327a7d] text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-2 transition-colors"><Banknote size={14}/> Pagar</button>
+                                                     <button onClick={() => setIsEmployeeHistoryModalOpen(emp)} className="p-2 bg-slate-800 text-slate-400 rounded-xl hover:text-white transition-colors" title="Ver Historial del Empleado"><History size={14}/></button>
+                                                     <button onClick={() => { setNewEmployee(emp); setIsEmployeeModalOpen(true); }} className="p-2 bg-slate-800 text-slate-400 rounded-xl hover:text-[#f9f54b] transition-colors" title="Editar"><Pencil size={14}/></button>
+                                                     <button onClick={() => deleteEmployee(emp.id)} className="p-2 bg-slate-800 text-slate-400 rounded-xl hover:text-red-500 transition-colors" title="Eliminar"><Trash2 size={14}/></button>
+                                                 </div>
+                                             </div>
+                                         ))
+                                     )}
+                                 </div>
+                             </div>
+                         </div>
+                     </div>
                   </div>
                 )}
 
@@ -1014,7 +1079,7 @@
                             <div className="absolute bottom-0 left-0 h-1 bg-gradient-to-r from-[#3f979b] to-[#8bf5fa] transition-all duration-500" style={{ width: `${progressPercent}%` }} />
                             <div className="flex items-center justify-between"><div className="flex items-center gap-4"><div className="w-12 h-12 min-w-[48px] rounded-2xl flex items-center justify-center bg-slate-800 border border-slate-700 overflow-hidden shadow-inner">{client.clientLogo ? <img src={client.clientLogo} className="w-full h-full object-cover" alt={client.name} /> : <span className="font-black text-slate-600 text-lg uppercase">{client.name.charAt(0)}</span>}</div><div className="overflow-hidden"><h3 className="font-black text-white text-sm truncate w-40 leading-tight mb-1">{client.name}</h3><div className="flex items-center gap-2"><span className={`px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wide border ${status.color}`}>{status.label}</span><span className="text-[9px] font-bold text-slate-500 uppercase tracking-tight">• Día {client.billingDay}</span></div></div></div></div>
                             <div className="grid grid-cols-2 gap-2 bg-slate-950/30 p-2.5 rounded-2xl border border-slate-800/40 relative">
-                                {extrasTotal > 0 && (<div className="absolute -top-3 right-2 bg-[#f9f54b] text-slate-900 px-2 py-0.5 rounded-full text-[8px] font-black flex items-center gap-1 shadow-lg shadow-[#f9f54b]/20"><PackagePlus size={10} /> + {client.currency || '$'}{extrasTotal} en extras</div>)}
+                                {extrasTotal > 0 && (<div className="absolute -top-3 right-2 bg-[#f9f54b] text-slate-900 px-2 py-0.5 rounded-full text-[8px] font-black flex items-center gap-1 shadow-lg shadow-[#f9f54b]/20"><PackagePlus size={10} /> + {client.currency || '$'}{extrasTotal}</div>)}
                                 <div><p className="text-[7px] font-black text-slate-600 uppercase mb-0.5 tracking-wider">Abonado</p><p className="text-sm font-black text-slate-200">{client.currency || '$'}{paid} <span className="text-[10px] text-slate-500 font-medium">/ {client.currency || '$'}{totalAmount}</span></p></div>
                                 <div className="text-right"><p className="text-[7px] font-black text-slate-600 uppercase mb-0.5 tracking-wider">Pendiente</p><p className={`text-sm font-black ${remaining > 0 ? 'text-[#f9f54b]' : 'text-emerald-400'}`}>{remaining > 0 ? `${client.currency || '$'}${remaining}` : 'COMPLETO'}</p></div>
                             </div>
@@ -1125,7 +1190,172 @@
                 
                 <div className="h-40 w-full" />
 
-                {/* MODALES DE EXTRAS Y FORMULARIOS */}
+                {/* MODALES GLOBALES */}
+
+                {/* Modal Historial de Empleado Específico */}
+                {isEmployeeHistoryModalOpen && (
+                    <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[150] flex items-center justify-center p-4">
+                        <div className="bg-slate-900 border border-slate-800 w-full max-w-[350px] max-h-[80vh] rounded-[32px] overflow-hidden shadow-2xl animate-in zoom-in duration-200 flex flex-col">
+                            <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/30">
+                                <div className="flex items-center gap-2"><History size={18} className="text-[#8bf5fa]" /><h2 className="font-black text-sm text-white uppercase tracking-wide truncate">Historial: {isEmployeeHistoryModalOpen.name.split(' ')[0]}</h2></div>
+                                <button onClick={() => setIsEmployeeHistoryModalOpen(null)} className="text-slate-500 hover:text-white"><X size={20}/></button>
+                            </div>
+                            <div className="p-3 overflow-y-auto flex-1">
+                                {payrollHistory.filter(p => p.employeeId === isEmployeeHistoryModalOpen.id).length === 0 ? (
+                                    <div className="text-center py-8 opacity-50"><Briefcase className="mx-auto mb-2 text-[#3f979b]" size={24} /><p className="text-[10px] uppercase font-bold text-slate-400">Sin pagos registrados</p></div>
+                                ) : (
+                                    <div className="space-y-3">
+                                        {payrollHistory.filter(p => p.employeeId === isEmployeeHistoryModalOpen.id).map(pay => (
+                                            <div key={pay.id} className="bg-slate-800/50 p-3 rounded-2xl border border-slate-700/50 flex flex-col gap-2">
+                                                <div className="flex justify-between items-start">
+                                                    <div>
+                                                        <p className="text-[10px] font-black text-[#8bf5fa] uppercase">{pay.periodStr}</p>
+                                                        <p className="text-[9px] text-slate-400">{new Date(pay.createdAt).toLocaleDateString('es-ES')} - Tasa: Bs. {pay.rateBCV}</p>
+                                                    </div>
+                                                    <div className="text-right">
+                                                        <p className="text-sm font-black text-emerald-400">${pay.amountUSD}</p>
+                                                        <p className="text-[9px] font-bold text-slate-400">Bs. {pay.totalBs.toLocaleString('es-VE')}</p>
+                                                    </div>
+                                                </div>
+                                                {pay.extraUSD > 0 && (
+                                                    <div className="bg-slate-900 p-2 rounded-lg text-[9px] font-bold text-slate-300 border border-slate-700/50 flex justify-between">
+                                                        <span><span className="text-[#f9f54b]">Bono:</span> {pay.extraDescription}</span>
+                                                        <span className="text-[#f9f54b]">+{pay.extraUSD}</span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Modal Empleados */}
+                {isEmployeeModalOpen && (
+                  <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[150] flex items-center justify-center p-4">
+                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[32px] overflow-hidden shadow-2xl animate-in fade-in zoom-in duration-200">
+                      <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/30">
+                        <h2 className="font-black text-sm text-white uppercase tracking-wide">{newEmployee.id ? 'Editar Empleado' : 'Nuevo Empleado'}</h2>
+                        <button onClick={() => setIsEmployeeModalOpen(false)} className="text-slate-500 hover:text-[#8bf5fa]"><X size={20}/></button>
+                      </div>
+                      <form onSubmit={saveEmployee} className="p-6 space-y-3">
+                        <div>
+                            <label className="text-[9px] font-black text-[#8bf5fa] uppercase ml-1 mb-1 block">Nombre Completo</label>
+                            <input required type="text" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white outline-none focus:border-[#8bf5fa]" value={newEmployee.name} onChange={e => setNewEmployee({...newEmployee, name: e.target.value})} />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                            <div>
+                                <label className="text-[9px] font-black text-[#8bf5fa] uppercase ml-1 mb-1 block">Cédula</label>
+                                <input required type="text" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white outline-none focus:border-[#8bf5fa]" value={newEmployee.cedula} onChange={e => setNewEmployee({...newEmployee, cedula: e.target.value})} />
+                            </div>
+                            <div>
+                                <label className="text-[9px] font-black text-[#8bf5fa] uppercase ml-1 mb-1 block">Teléfono</label>
+                                <input required type="text" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white outline-none focus:border-[#8bf5fa]" value={newEmployee.phone} onChange={e => setNewEmployee({...newEmployee, phone: e.target.value})} />
+                            </div>
+                        </div>
+                        <div>
+                            <label className="text-[9px] font-black text-[#8bf5fa] uppercase ml-1 mb-1 block">Correo Electrónico (Para envío de recibos)</label>
+                            <input required type="email" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white outline-none focus:border-[#8bf5fa]" value={newEmployee.email} onChange={e => setNewEmployee({...newEmployee, email: e.target.value})} />
+                        </div>
+                        <div>
+                            <label className="text-[9px] font-black text-[#8bf5fa] uppercase ml-1 mb-1 block">Sueldo Base (Mensual USD)</label>
+                            <input required type="number" step="any" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-black text-[#f9f54b] outline-none focus:border-[#8bf5fa]" value={newEmployee.baseSalary} onChange={e => setNewEmployee({...newEmployee, baseSalary: e.target.value})} />
+                        </div>
+                        <div>
+                            <label className="text-[9px] font-black text-[#8bf5fa] uppercase ml-1 mb-1 block">Métodos de Pago Registrados</label>
+                            <textarea rows="2" placeholder="Ej: Pago Móvil CI 0000000 | Binance: correo@..." className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-slate-300 outline-none focus:border-[#8bf5fa]" value={newEmployee.paymentMethods} onChange={e => setNewEmployee({...newEmployee, paymentMethods: e.target.value})} />
+                        </div>
+                        <button type="submit" className="w-full bg-[#8bf5fa] hover:bg-cyan-300 text-slate-900 font-black py-4 rounded-xl uppercase text-[10px] mt-2 transition-colors shadow-lg shadow-[#8bf5fa]/20">{newEmployee.id ? 'Actualizar Empleado' : 'Guardar Empleado'}</button>
+                      </form>
+                    </div>
+                  </div>
+                )}
+
+                {/* Modal Pago Nómina */}
+                {isPayrollModalOpen && selectedEmployee && (
+                    <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[150] flex items-center justify-center p-4">
+                    <div className="bg-slate-900 border border-slate-800 w-full max-w-sm max-h-[90vh] overflow-y-auto rounded-[32px] shadow-2xl animate-in fade-in zoom-in duration-200">
+                      <div className="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/30 sticky top-0 z-10 backdrop-blur-md">
+                        <div className="flex items-center gap-2"><Banknote size={18} className="text-[#3f979b]"/><h2 className="font-black text-sm text-white uppercase tracking-wide">Pagar a {selectedEmployee.name.split(' ')[0]}</h2></div>
+                        <button onClick={() => setIsPayrollModalOpen(false)} className="text-slate-500 hover:text-white"><X size={20}/></button>
+                      </div>
+                      <form onSubmit={registerPayrollPayment} className="p-5">
+                        
+                        {/* Seccion 1: Monto Base */}
+                        <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3 mb-4">
+                            <h4 className="text-[10px] font-black text-[#8bf5fa] uppercase tracking-widest border-b border-slate-800 pb-1">1. Sueldo a Pagar</h4>
+                            <div className="flex gap-2">
+                                <button type="button" onClick={() => handlePaymentModeChange('quincena')} className={`flex-1 py-2 rounded-lg text-[9px] font-black uppercase transition-colors ${payrollForm.paymentMode === 'quincena' ? 'bg-[#8bf5fa] text-slate-900' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>Mitad (15 días)</button>
+                                <button type="button" onClick={() => handlePaymentModeChange('mes')} className={`flex-1 py-2 rounded-lg text-[9px] font-black uppercase transition-colors ${payrollForm.paymentMode === 'mes' ? 'bg-[#8bf5fa] text-slate-900' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>Mes Completo</button>
+                                <button type="button" onClick={() => handlePaymentModeChange('custom')} className={`flex-1 py-2 rounded-lg text-[9px] font-black uppercase transition-colors ${payrollForm.paymentMode === 'custom' ? 'bg-[#8bf5fa] text-slate-900' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>Libre</button>
+                            </div>
+                            <div className="relative">
+                                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 font-bold">$</span>
+                                <input required type="number" step="any" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 pl-8 text-sm font-black text-white outline-none focus:border-[#8bf5fa]" value={payrollForm.basePaymentUSD} onChange={e => { setPayrollForm({...payrollForm, basePaymentUSD: e.target.value, paymentMode: 'custom'}); }} />
+                            </div>
+                        </div>
+
+                        {/* Seccion 2: Bonos y Extras */}
+                        <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3 mb-4">
+                            <h4 className="text-[10px] font-black text-[#f9f54b] uppercase tracking-widest border-b border-slate-800 pb-1 flex justify-between">
+                                <span>2. Bonos / Extras</span>
+                                <span className="text-slate-500 font-bold lowercase">(Opcional)</span>
+                            </h4>
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="text-[8px] font-bold text-slate-500 uppercase ml-1">Monto Extra ($)</label>
+                                    <input type="number" step="any" placeholder="0.00" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-sm font-black text-[#f9f54b] outline-none focus:border-[#f9f54b]" value={payrollForm.extraUSD} onChange={e => setPayrollForm({...payrollForm, extraUSD: e.target.value})} />
+                                </div>
+                                <div>
+                                    <label className="text-[8px] font-bold text-slate-500 uppercase ml-1">Motivo / Concepto</label>
+                                    <input type="text" placeholder="Ej: Horas extras" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs font-bold text-white outline-none focus:border-[#f9f54b]" value={payrollForm.extraDescription} onChange={e => setPayrollForm({...payrollForm, extraDescription: e.target.value})} />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Total y Tasa */}
+                        <div className="grid grid-cols-2 gap-3 mb-4">
+                            <div>
+                                <label className="text-[9px] font-black text-slate-500 uppercase ml-1 mb-1 block">Tasa BCV del Día</label>
+                                <input required type="number" step="any" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm font-black text-white outline-none focus:border-[#8bf5fa]" value={payrollForm.rateBCV} onChange={e => setPayrollForm({...payrollForm, rateBCV: e.target.value})} />
+                            </div>
+                            <div className="bg-[#3f979b]/10 border border-[#3f979b]/30 rounded-xl p-3 flex flex-col justify-center items-center">
+                                <span className="text-[8px] font-black text-slate-400 uppercase">Total a Transferir</span>
+                                <span className="text-[15px] font-black text-[#3f979b]">Bs. {((Number(payrollForm.basePaymentUSD) + Number(payrollForm.extraUSD)) * Number(payrollForm.rateBCV) || 0).toLocaleString('es-VE', {minimumFractionDigits:2})}</span>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3 mb-4">
+                            <div className="col-span-2">
+                                <label className="text-[9px] font-black text-[#8bf5fa] uppercase ml-1 mb-1 block">Descripción del Recibo</label>
+                                <input required type="text" className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white outline-none focus:border-[#8bf5fa]" value={payrollForm.description} onChange={e => setPayrollForm({...payrollForm, description: e.target.value})} />
+                            </div>
+                            <div>
+                                <label className="text-[9px] font-black text-[#8bf5fa] uppercase ml-1 mb-1 block">Quincena / Periodo</label>
+                                <select className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white outline-none focus:border-[#8bf5fa]" value={payrollForm.periodType} onChange={e => setPayrollForm({...payrollForm, periodType: e.target.value})}>
+                                    <option value="1ra Quincena">1ra Quincena</option>
+                                    <option value="2da Quincena">2da Quincena</option>
+                                    <option value="Mes Completo">Mes Completo</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="text-[9px] font-black text-[#8bf5fa] uppercase ml-1 mb-1 block">Mes</label>
+                                <select className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs font-bold text-white outline-none focus:border-[#8bf5fa]" value={payrollForm.month} onChange={e => setPayrollForm({...payrollForm, month: e.target.value})}>
+                                    {mesesNombres.map((m, i) => <option key={i} value={i}>{m}</option>)}
+                                </select>
+                            </div>
+                        </div>
+
+                        <button type="submit" className="w-full bg-[#3f979b] hover:bg-[#327a7d] text-white font-black py-4 rounded-xl uppercase text-[10px] transition-colors shadow-lg shadow-[#3f979b]/20 flex items-center justify-center gap-2">
+                            <Printer size={16} /> Generar Pago y PDF
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                )}
+
                 {isExtraModalOpen && (
                   <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
                     <div className="bg-slate-900 border border-slate-800 w-full max-w-[320px] rounded-[32px] overflow-hidden shadow-2xl animate-in zoom-in duration-200 flex flex-col">
